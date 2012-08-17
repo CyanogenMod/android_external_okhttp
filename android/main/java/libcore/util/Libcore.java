@@ -19,6 +19,8 @@ package libcore.util;
 import javax.net.ssl.SSLSocket;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.Socket;
@@ -27,6 +29,8 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.ByteOrder;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 
 /**
  * APIs for interacting with Android's core library. The main purpose of this
@@ -47,6 +51,7 @@ public final class Libcore {
     private static final Method setHostname;
     private static final Method setNpnProtocols;
     private static final Method getNpnSelectedProtocol;
+    private static final Constructor<DeflaterOutputStream> deflaterOutputStreamConstructor;
 
     static {
         try {
@@ -59,10 +64,25 @@ public final class Libcore {
             setHostname = openSslSocketClass.getMethod("setHostname", String.class);
             setNpnProtocols = openSslSocketClass.getMethod("setNpnProtocols", byte[].class);
             getNpnSelectedProtocol = openSslSocketClass.getMethod("getNpnSelectedProtocol");
+            deflaterOutputStreamConstructor = DeflaterOutputStream.class.getConstructor(
+                   new Class[] { OutputStream.class, Deflater.class, boolean.class });
         } catch (ClassNotFoundException cnfe) {
             throw new RuntimeException(cnfe);
         } catch (NoSuchMethodException nsme) {
             throw new RuntimeException(nsme);
+        }
+    }
+
+    public static DeflaterOutputStream newDeflaterOutputStream(
+            OutputStream os, Deflater deflater, boolean syncFlush) {
+        try {
+            return deflaterOutputStreamConstructor.newInstance(os, deflater, syncFlush);
+        } catch (InstantiationException e) {
+            throw new RuntimeException("Unknown DeflaterOutputStream implementation.");
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Unknown DeflaterOutputStream implementation.");
+        } catch (InvocationTargetException e) {
+            throw new RuntimeException("Unknown DeflaterOutputStream implementation.");
         }
     }
 

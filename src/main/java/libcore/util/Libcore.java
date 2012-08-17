@@ -18,6 +18,7 @@ package libcore.util;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -29,6 +30,8 @@ import java.net.URL;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 import javax.net.ssl.SSLSocket;
 import org.eclipse.jetty.npn.NextProtoNego;
 
@@ -70,6 +73,11 @@ public final class Libcore {
         } catch (NoSuchMethodException ignored) {
             // This Android runtime is missing some optional TLS options.
         }
+    }
+
+    public static DeflaterOutputStream newDeflaterOutputStream(
+            OutputStream os, Deflater deflater, boolean syncFlush) {
+        return new DeflaterOutputStream(os, deflater, syncFlush);
     }
 
     public static void makeTlsTolerant(SSLSocket socket, String socketHost, boolean tlsTolerant) {

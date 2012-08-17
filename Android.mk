@@ -26,6 +26,7 @@ LOCAL_SRC_FILES := $(call all-java-files-under, src/main/java)
 LOCAL_SRC_FILES := $(filter-out %/Libcore.java, $(LOCAL_SRC_FILES))
 
 LOCAL_SRC_FILES += $(call all-java-files-under, android/main/java)
+LOCAL_SDK_VERSION := 16
 
 LOCAL_JARJAR_RULES := ${LOCAL_PATH}/jarjar-rules.txt
 include $(BUILD_JAVA_LIBRARY)
