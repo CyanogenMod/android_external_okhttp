@@ -46,7 +46,6 @@ public final class Libcore {
     }
 
     private static final Class<?> openSslSocketClass;
-    private static final Method setEnabledCompressionMethods;
     private static final Method setUseSessionTickets;
     private static final Method setHostname;
     private static final Method setNpnProtocols;
@@ -57,8 +56,6 @@ public final class Libcore {
         try {
             openSslSocketClass = Class.forName(
                     "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl");
-            setEnabledCompressionMethods = openSslSocketClass.getMethod(
-                    "setEnabledCompressionMethods", String[].class);
             setUseSessionTickets = openSslSocketClass.getMethod(
                     "setUseSessionTickets", boolean.class);
             setHostname = openSslSocketClass.getMethod("setHostname", String.class);
@@ -94,9 +91,6 @@ public final class Libcore {
 
         if (openSslSocketClass.isInstance(socket)) {
             try {
-                String[] compressionMethods = {"ZLIB"};
-                setEnabledCompressionMethods.invoke(socket,
-                        new Object[] {compressionMethods});
                 setUseSessionTickets.invoke(socket, true);
                 setHostname.invoke(socket, socketHost);
             } catch (InvocationTargetException e) {
