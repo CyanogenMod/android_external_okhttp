@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLSocketFactory;
 import libcore.io.IoUtils;
 import libcore.util.EmptyArray;
@@ -67,10 +68,10 @@ import libcore.util.ResponseSource;
  * required, use {@link #automaticallyReleaseConnectionToPool()}.
  */
 public class HttpEngine {
-    private static final CacheResponse BAD_GATEWAY_RESPONSE = new CacheResponse() {
+    private static final CacheResponse GATEWAY_TIMEOUT_RESPONSE = new CacheResponse() {
         @Override public Map<String, List<String>> getHeaders() throws IOException {
             Map<String, List<String>> result = new HashMap<String, List<String>>();
-            result.put(null, Collections.singletonList("HTTP/1.1 502 Bad Gateway"));
+            result.put(null, Collections.singletonList("HTTP/1.1 504 Gateway Timeout"));
             return result;
         }
         @Override public InputStream getBody() throws IOException {
@@ -86,7 +87,6 @@ public class HttpEngine {
     public static final String PUT = "PUT";
     public static final String DELETE = "DELETE";
     public static final String TRACE = "TRACE";
-    public static final String CONNECT = "CONNECT";
 
     public static final int HTTP_CONTINUE = 100;
 
@@ -101,6 +101,7 @@ public class HttpEngine {
 
     private Transport transport;
 
+    private InputStream responseTransferIn;
     private InputStream responseBodyIn;
 
     private final ResponseCache responseCache = ResponseCache.getDefault();
@@ -188,15 +189,17 @@ public class HttpEngine {
         /*
          * The raw response source may require the network, but the request
          * headers may forbid network use. In that case, dispose of the network
-         * response and use a BAD_GATEWAY response instead.
+         * response and use a GATEWAY_TIMEOUT response instead, as specified
+         * by http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9.4.
          */
         if (requestHeaders.isOnlyIfCached() && responseSource.requiresConnection()) {
             if (responseSource == ResponseSource.CONDITIONAL_CACHE) {
                 IoUtils.closeQuietly(cachedResponseBody);
             }
             this.responseSource = ResponseSource.CACHE;
-            this.cacheResponse = BAD_GATEWAY_RESPONSE;
-            RawHeaders rawResponseHeaders = RawHeaders.fromMultimap(cacheResponse.getHeaders());
+            this.cacheResponse = GATEWAY_TIMEOUT_RESPONSE;
+            RawHeaders rawResponseHeaders
+                    = RawHeaders.fromMultimap(cacheResponse.getHeaders(), true);
             setResponse(new ResponseHeaders(uri, rawResponseHeaders), cacheResponse.getBody());
         }
 
@@ -219,7 +222,7 @@ public class HttpEngine {
         }
 
         CacheResponse candidate = responseCache.get(uri, method,
-                requestHeaders.getHeaders().toMultimap());
+                requestHeaders.getHeaders().toMultimap(false));
         if (candidate == null) {
             return;
         }
@@ -233,7 +236,7 @@ public class HttpEngine {
             return;
         }
 
-        RawHeaders rawResponseHeaders = RawHeaders.fromMultimap(responseHeadersMap);
+        RawHeaders rawResponseHeaders = RawHeaders.fromMultimap(responseHeadersMap, true);
         cachedResponseHeaders = new ResponseHeaders(uri, rawResponseHeaders);
         long now = System.currentTimeMillis();
         this.responseSource = cachedResponseHeaders.chooseResponseSource(now, requestHeaders);
@@ -271,22 +274,18 @@ public class HttpEngine {
      * Connect to the origin server either directly or via a proxy.
      */
     protected void connect() throws IOException {
-        if (connection == null) {
-            connection = openSocketConnection();
+        if (connection != null) {
+            return;
         }
-    }
-
-    protected final HttpConnection openSocketConnection() throws IOException {
-        HttpConnection result = HttpConnection.connect(uri, getSslSocketFactory(),
-                policy.getProxy(), requiresTunnel(), policy.getConnectTimeout());
-        Proxy proxy = result.getAddress().getProxy();
+        connection = HttpConnection.connect(uri, getSslSocketFactory(), getHostnameVerifier(),
+                policy.getProxy(), policy.getConnectTimeout(), policy.getReadTimeout(),
+                getTunnelConfig());
+        Proxy proxy = connection.getAddress().getProxy();
         if (proxy != null) {
             policy.setProxy(proxy);
             // Add the authority to the request line when we're using a proxy.
-            requestHeaders.getHeaders().setStatusLine(getRequestLine());
+            requestHeaders.getHeaders().setRequestLine(getRequestLine());
         }
-        result.setSoTimeout(policy.getReadTimeout());
-        return result;
     }
 
     /**
@@ -414,7 +413,7 @@ public class HttpEngine {
         if (!connectionReleased && connection != null) {
             connectionReleased = true;
 
-            if (!reusable || !transport.makeReusable(requestBodyOut, responseBodyIn)) {
+            if (!reusable || !transport.makeReusable(requestBodyOut, responseTransferIn)) {
                 connection.closeSocketAndStreams();
                 connection = null;
             } else if (automaticallyReleaseConnectionToPool) {
@@ -425,6 +424,7 @@ public class HttpEngine {
     }
 
     private void initContentStream(InputStream transferStream) throws IOException {
+        responseTransferIn = transferStream;
         if (transparentGzip && responseHeaders.isContentEncodingGzip()) {
             /*
              * If the response was transparently gzipped, remove the gzip header field
@@ -449,8 +449,7 @@ public class HttpEngine {
             return false;
         }
 
-        if (method != CONNECT
-                && (responseCode < HTTP_CONTINUE || responseCode >= 200)
+        if ((responseCode < HTTP_CONTINUE || responseCode >= 200)
                 && responseCode != HttpURLConnectionImpl.HTTP_NO_CONTENT
                 && responseCode != HttpURLConnectionImpl.HTTP_NOT_MODIFIED) {
             return true;
@@ -475,7 +474,7 @@ public class HttpEngine {
      * doesn't know what content types the application is interested in.
      */
     private void prepareRawRequestHeaders() throws IOException {
-        requestHeaders.getHeaders().setStatusLine(getRequestLine());
+        requestHeaders.getHeaders().setRequestLine(getRequestLine());
 
         if (requestHeaders.getUserAgent() == null) {
             requestHeaders.setUserAgent(getDefaultUserAgent());
@@ -509,7 +508,7 @@ public class HttpEngine {
         CookieHandler cookieHandler = CookieHandler.getDefault();
         if (cookieHandler != null) {
             requestHeaders.addCookies(
-                    cookieHandler.get(uri, requestHeaders.getHeaders().toMultimap()));
+                    cookieHandler.get(uri, requestHeaders.getHeaders().toMultimap(false)));
         }
     }
 
@@ -530,12 +529,22 @@ public class HttpEngine {
         if (includeAuthorityInRequestLine()) {
             return url.toString();
         } else {
-            String fileOnly = url.getFile();
-            if (fileOnly == null) {
-                fileOnly = "/";
-            } else if (!fileOnly.startsWith("/")) {
-                fileOnly = "/" + fileOnly;
-            }
+            return requestPath(url);
+        }
+    }
+
+    /**
+     * Returns the path to request, like the '/' in 'GET / HTTP/1.1'. Never
+     * empty, even if the request URL is. Includes the query component if it
+     * exists.
+     */
+    public static String requestPath(URL url) {
+        String fileOnly = url.getFile();
+        if (fileOnly == null) {
+            return "/";
+        } else if (!fileOnly.startsWith("/")) {
+            return "/" + fileOnly;
+        } else {
             return fileOnly;
         }
     }
@@ -560,22 +569,26 @@ public class HttpEngine {
         return null;
     }
 
-    protected final String getDefaultUserAgent() {
+    /**
+     * Returns the hostname verifier for connections created by this engine. We
+     * cannot reuse HTTPS connections if the hostname verifier has changed.
+     */
+    protected HostnameVerifier getHostnameVerifier() {
+        return null;
+    }
+
+    public static final String getDefaultUserAgent() {
         String agent = System.getProperty("http.agent");
         return agent != null ? agent : ("Java" + System.getProperty("java.version"));
     }
 
-    protected final String getOriginAddress(URL url) {
+    public static String getOriginAddress(URL url) {
         int port = url.getPort();
         String result = url.getHost();
-        if (port > 0 && port != policy.getDefaultPort()) {
+        if (port > 0 && port != Libcore.getDefaultPort(url.getProtocol())) {
             result = result + ":" + port;
         }
         return result;
-    }
-
-    protected boolean requiresTunnel() {
-        return false;
     }
 
     /**
@@ -636,5 +649,9 @@ public class HttpEngine {
         }
 
         initContentStream(transport.getTransferStream(cacheRequest));
+    }
+
+    protected HttpConnection.TunnelConfig getTunnelConfig() {
+        return null;
     }
 }

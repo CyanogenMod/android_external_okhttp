@@ -18,7 +18,7 @@ package libcore.net.http;
 
 import com.squareup.okhttp.OkHttpConnection;
 import com.squareup.okhttp.OkHttpsConnection;
-import java.io.BufferedInputStream;
+
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -51,7 +51,7 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import libcore.io.Base64;
 import libcore.io.DiskLruCache;
 import libcore.io.IoUtils;
-import libcore.io.Streams;
+import libcore.io.StrictLineReader;
 import libcore.util.Charsets;
 import libcore.util.ExtendedResponseCache;
 import libcore.util.IntegralToString;
@@ -104,7 +104,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
             if (snapshot == null) {
                 return null;
             }
-            entry = new Entry(new BufferedInputStream(snapshot.getInputStream(ENTRY_METADATA)));
+            entry = new Entry(snapshot.getInputStream(ENTRY_METADATA));
         } catch (IOException e) {
             // Give up because the cache cannot be read.
             return null;
@@ -181,8 +181,8 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
      * not updated. If the stored response has changed since {@code
      * conditionalCacheHit} was returned, this does nothing.
      */
-    @Override
-    public void update(CacheResponse conditionalCacheHit, OkHttpConnection httpConnection) {
+    @Override public void update(CacheResponse conditionalCacheHit, OkHttpConnection httpConnection)
+            throws IOException {
         HttpEngine httpEngine = getHttpEngine(httpConnection);
         URI uri = httpEngine.getUri();
         ResponseHeaders response = httpEngine.getResponseHeaders();
@@ -287,6 +287,13 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
                     super.close();
                     editor.commit();
                 }
+
+                @Override
+                public void write(byte[] buffer, int offset, int length) throws IOException {
+                    // Since we don't override "write(int oneByte)", we can write directly to "out"
+                    // and avoid the inefficient implementation from the FilterOutputStream.
+                    out.write(buffer, offset, length);
+                }
             };
         }
 
@@ -367,29 +374,30 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
          */
         public Entry(InputStream in) throws IOException {
             try {
-                uri = Streams.readAsciiLine(in);
-                requestMethod = Streams.readAsciiLine(in);
+                StrictLineReader reader = new StrictLineReader(in, Charsets.US_ASCII);
+                uri = reader.readLine();
+                requestMethod = reader.readLine();
                 varyHeaders = new RawHeaders();
-                int varyRequestHeaderLineCount = readInt(in);
+                int varyRequestHeaderLineCount = reader.readInt();
                 for (int i = 0; i < varyRequestHeaderLineCount; i++) {
-                    varyHeaders.addLine(Streams.readAsciiLine(in));
+                    varyHeaders.addLine(reader.readLine());
                 }
 
                 responseHeaders = new RawHeaders();
-                responseHeaders.setStatusLine(Streams.readAsciiLine(in));
-                int responseHeaderLineCount = readInt(in);
+                responseHeaders.setStatusLine(reader.readLine());
+                int responseHeaderLineCount = reader.readInt();
                 for (int i = 0; i < responseHeaderLineCount; i++) {
-                    responseHeaders.addLine(Streams.readAsciiLine(in));
+                    responseHeaders.addLine(reader.readLine());
                 }
 
                 if (isHttps()) {
-                    String blank = Streams.readAsciiLine(in);
-                    if (blank.length() != 0) {
+                    String blank = reader.readLine();
+                    if (!blank.isEmpty()) {
                         throw new IOException("expected \"\" but was \"" + blank + "\"");
                     }
-                    cipherSuite = Streams.readAsciiLine(in);
-                    peerCertificates = readCertArray(in);
-                    localCertificates = readCertArray(in);
+                    cipherSuite = reader.readLine();
+                    peerCertificates = readCertArray(reader);
+                    localCertificates = readCertArray(reader);
                 } else {
                     cipherSuite = null;
                     peerCertificates = null;
@@ -400,11 +408,12 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
             }
         }
 
-        public Entry(URI uri, RawHeaders varyHeaders, OkHttpConnection httpConnection) {
+        public Entry(URI uri, RawHeaders varyHeaders, OkHttpConnection httpConnection)
+                throws IOException {
             this.uri = uri.toString();
             this.varyHeaders = varyHeaders;
             this.requestMethod = httpConnection.getRequestMethod();
-            this.responseHeaders = RawHeaders.fromMultimap(httpConnection.getHeaderFields());
+            this.responseHeaders = RawHeaders.fromMultimap(httpConnection.getHeaderFields(), true);
 
             if (isHttps()) {
                 OkHttpsConnection httpsConnection
@@ -425,7 +434,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
         }
 
         public void writeTo(DiskLruCache.Editor editor) throws IOException {
-            OutputStream out = editor.newOutputStream(0);
+            OutputStream out = editor.newOutputStream(ENTRY_METADATA);
             Writer writer = new BufferedWriter(new OutputStreamWriter(out, Charsets.UTF_8));
 
             writer.write(uri + '\n');
@@ -456,17 +465,8 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
             return uri.startsWith("https://");
         }
 
-        private int readInt(InputStream in) throws IOException {
-            String intString = Streams.readAsciiLine(in);
-            try {
-                return Integer.parseInt(intString);
-            } catch (NumberFormatException e) {
-                throw new IOException("expected an int but was \"" + intString + "\"");
-            }
-        }
-
-        private Certificate[] readCertArray(InputStream in) throws IOException {
-            int length = readInt(in);
+        private Certificate[] readCertArray(StrictLineReader reader) throws IOException {
+            int length = reader.readInt();
             if (length == -1) {
                 return null;
             }
@@ -474,7 +474,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
                 CertificateFactory certificateFactory = CertificateFactory.getInstance("X.509");
                 Certificate[] result = new Certificate[length];
                 for (int i = 0; i < result.length; i++) {
-                    String line = Streams.readAsciiLine(in);
+                    String line = reader.readLine();
                     byte[] bytes = Base64.decode(line.getBytes("US-ASCII"));
                     result[i] = certificateFactory.generateCertificate(
                             new ByteArrayInputStream(bytes));
@@ -507,7 +507,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
             return this.uri.equals(uri.toString())
                     && this.requestMethod.equals(requestMethod)
                     && new ResponseHeaders(uri, responseHeaders)
-                            .varyMatches(varyHeaders.toMultimap(), requestHeaders);
+                            .varyMatches(varyHeaders.toMultimap(false), requestHeaders);
         }
     }
 
@@ -536,7 +536,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
         }
 
         @Override public Map<String, List<String>> getHeaders() {
-            return entry.responseHeaders.toMultimap();
+            return entry.responseHeaders.toMultimap(true);
         }
 
         @Override public InputStream getBody() {
@@ -556,7 +556,7 @@ public final class HttpResponseCache extends ResponseCache implements ExtendedRe
         }
 
         @Override public Map<String, List<String>> getHeaders() {
-            return entry.responseHeaders.toMultimap();
+            return entry.responseHeaders.toMultimap(true);
         }
 
         @Override public InputStream getBody() {

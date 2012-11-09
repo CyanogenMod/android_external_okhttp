@@ -31,13 +31,6 @@ import static libcore.util.Libcore.newDeflaterOutputStream;
  */
 final class SpdyWriter {
     final DataOutputStream out;
-    public int flags;
-    public int streamId;
-    public int associatedStreamId;
-    public int priority;
-    public int statusCode;
-
-    public List<String> nameValueBlock;
     private final ByteArrayOutputStream nameValueBlockBuffer;
     private final DataOutputStream nameValueBlockOut;
 
@@ -51,8 +44,9 @@ final class SpdyWriter {
                newDeflaterOutputStream(nameValueBlockBuffer, deflater, true));
     }
 
-    public void synStream() throws IOException {
-        writeNameValueBlockToBuffer();
+    public void synStream(int flags, int streamId, int associatedStreamId, int priority,
+            List<String> nameValueBlock) throws IOException {
+        writeNameValueBlockToBuffer(nameValueBlock);
         int length = 10 + nameValueBlockBuffer.size();
         int type = SpdyConnection.TYPE_SYN_STREAM;
 
@@ -66,8 +60,8 @@ final class SpdyWriter {
         out.flush();
     }
 
-    public void synReply() throws IOException {
-        writeNameValueBlockToBuffer();
+    public void synReply(int flags, int streamId, List<String> nameValueBlock) throws IOException {
+        writeNameValueBlockToBuffer(nameValueBlock);
         int type = SpdyConnection.TYPE_SYN_REPLY;
         int length = nameValueBlockBuffer.size() + 6;
         int unused = 0;
@@ -80,16 +74,18 @@ final class SpdyWriter {
         out.flush();
     }
 
-    public void synReset() throws IOException {
+    public void synReset(int streamId, int statusCode) throws IOException {
+        int flags = 0;
         int type = SpdyConnection.TYPE_RST_STREAM;
         int length = 8;
         out.writeInt(0x80000000 | (SpdyConnection.VERSION & 0x7fff) << 16 | type & 0xffff);
         out.writeInt((flags & 0xff) << 24 | length & 0xffffff);
         out.writeInt(streamId & 0x7fffffff);
         out.writeInt(statusCode);
+        out.flush();
     }
 
-    public void data(byte[] data) throws IOException {
+    public void data(int flags, int streamId, byte[] data) throws IOException {
         int length = data.length;
         out.writeInt(streamId & 0x7fffffff);
         out.writeInt((flags & 0xff) << 24 | length & 0xffffff);
@@ -97,7 +93,7 @@ final class SpdyWriter {
         out.flush();
     }
 
-    private void writeNameValueBlockToBuffer() throws IOException {
+    private void writeNameValueBlockToBuffer(List<String> nameValueBlock) throws IOException {
         nameValueBlockBuffer.reset();
         int numberOfPairs = nameValueBlock.size() / 2;
         nameValueBlockOut.writeShort(numberOfPairs);
@@ -106,5 +102,43 @@ final class SpdyWriter {
             nameValueBlockOut.write(s.getBytes("UTF-8"));
         }
         nameValueBlockOut.flush();
+    }
+
+    public void settings(int flags, Settings settings) throws IOException {
+        int type = SpdyConnection.TYPE_SETTINGS;
+        int size = settings.size();
+        int length = 4 + size * 8;
+        out.writeInt(0x80000000 | (SpdyConnection.VERSION & 0x7fff) << 16 | type & 0xffff);
+        out.writeInt((flags & 0xff) << 24 | length & 0xffffff);
+        out.writeInt(size);
+        for (int i = 0; i <= Settings.COUNT; i++) {
+            if (!settings.isSet(i)) continue;
+            int settingsFlags = settings.flags(i);
+            // settingId 0x00efcdab and settingFlags 0x12 combine to 0xabcdef12.
+            out.writeInt(((i & 0xff0000) >>> 8)
+                    | ((i & 0xff00) << 8)
+                    | ((i & 0xff) << 24)
+                    | (settingsFlags & 0xff));
+            out.writeInt(settings.get(i));
+        }
+        out.flush();
+    }
+
+    public void noop() throws IOException {
+        int type = SpdyConnection.TYPE_NOOP;
+        int length = 0;
+        int flags = 0;
+        out.writeInt(0x80000000 | (SpdyConnection.VERSION & 0x7fff) << 16 | type & 0xffff);
+        out.writeInt((flags & 0xff) << 24 | length & 0xffffff);
+        out.flush();
+    }
+
+    public void ping(int flags, int id) throws IOException {
+        int type = SpdyConnection.TYPE_PING;
+        int length = 4;
+        out.writeInt(0x80000000 | (SpdyConnection.VERSION & 0x7fff) << 16 | type & 0xffff);
+        out.writeInt((flags & 0xff) << 24 | length & 0xffffff);
+        out.writeInt(id);
+        out.flush();
     }
 }

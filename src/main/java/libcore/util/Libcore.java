@@ -18,7 +18,6 @@ package libcore.util;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -30,8 +29,6 @@ import java.net.URL;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.zip.Deflater;
-import java.util.zip.DeflaterOutputStream;
 import javax.net.ssl.SSLSocket;
 import org.eclipse.jetty.npn.NextProtoNego;
 
@@ -46,7 +43,6 @@ public final class Libcore {
 
     private static boolean useAndroidTlsApis;
     private static Class<?> openSslSocketClass;
-    private static Method setEnabledCompressionMethods;
     private static Method setUseSessionTickets;
     private static Method setHostname;
     private static boolean android23TlsOptionsAvailable;
@@ -59,8 +55,6 @@ public final class Libcore {
             openSslSocketClass = Class.forName(
                     "org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl");
             useAndroidTlsApis = true;
-            setEnabledCompressionMethods = openSslSocketClass.getMethod(
-                    "setEnabledCompressionMethods", String[].class);
             setUseSessionTickets = openSslSocketClass.getMethod(
                     "setUseSessionTickets", boolean.class);
             setHostname = openSslSocketClass.getMethod("setHostname", String.class);
@@ -75,12 +69,7 @@ public final class Libcore {
         }
     }
 
-    public static DeflaterOutputStream newDeflaterOutputStream(
-            OutputStream os, Deflater deflater, boolean syncFlush) {
-        return new DeflaterOutputStream(os, deflater, syncFlush);
-    }
-
-    public static void makeTlsTolerant(SSLSocket socket, String socketHost, boolean tlsTolerant) {
+    public static void makeTlsTolerant(SSLSocket socket, String uriHost, boolean tlsTolerant) {
         if (!tlsTolerant) {
             socket.setEnabledProtocols(new String[] {"SSLv3"});
             return;
@@ -89,11 +78,8 @@ public final class Libcore {
         if (android23TlsOptionsAvailable && openSslSocketClass.isInstance(socket)) {
             // This is Android: use reflection on OpenSslSocketImpl.
             try {
-                String[] compressionMethods = {"ZLIB"};
-                setEnabledCompressionMethods.invoke(socket,
-                        new Object[] {compressionMethods});
                 setUseSessionTickets.invoke(socket, true);
-                setHostname.invoke(socket, socketHost);
+                setHostname.invoke(socket, uriHost);
             } catch (InvocationTargetException e) {
                 throw new RuntimeException(e);
             } catch (IllegalAccessException e) {
@@ -211,10 +197,12 @@ public final class Libcore {
     }
 
     private static int getEffectivePort(String scheme, int specifiedPort) {
-        if (specifiedPort != -1) {
-            return specifiedPort;
-        }
+        return specifiedPort != -1
+                ? specifiedPort
+                : getDefaultPort(scheme);
+    }
 
+    public static int getDefaultPort(String scheme) {
         if ("http".equalsIgnoreCase(scheme)) {
             return 80;
         } else if ("https".equalsIgnoreCase(scheme)) {

@@ -22,11 +22,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.Authenticator;
 import java.net.HttpRetryException;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.PasswordAuthentication;
 import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.SocketPermission;
@@ -34,7 +31,7 @@ import java.net.URL;
 import java.security.Permission;
 import java.util.List;
 import java.util.Map;
-import libcore.io.Base64;
+import libcore.io.IoUtils;
 import libcore.util.Libcore;
 
 /**
@@ -92,6 +89,14 @@ public class HttpURLConnectionImpl extends OkHttpConnection {
     @Override public final void disconnect() {
         // Calling disconnect() before a connection exists should have no effect.
         if (httpEngine != null) {
+            // We close the response body here instead of in
+            // HttpEngine.release because that is called when input
+            // has been completely read from the underlying socket.
+            // However the response body can be a GZIPInputStream that
+            // still has unread data.
+            if (httpEngine.hasResponse()) {
+                IoUtils.closeQuietly(httpEngine.getResponseBody());
+            }
             httpEngine.release(false);
         }
     }
@@ -151,7 +156,7 @@ public class HttpURLConnectionImpl extends OkHttpConnection {
 
     @Override public final Map<String, List<String>> getHeaderFields() {
         try {
-            return getResponse().getResponseHeaders().getHeaders().toMultimap();
+            return getResponse().getResponseHeaders().getHeaders().toMultimap(true);
         } catch (IOException e) {
             return null;
         }
@@ -162,7 +167,7 @@ public class HttpURLConnectionImpl extends OkHttpConnection {
             throw new IllegalStateException(
                     "Cannot access request header fields after connection is set");
         }
-        return rawRequestHeaders.toMultimap();
+        return rawRequestHeaders.toMultimap(false);
     }
 
     @Override public final InputStream getInputStream() throws IOException {
@@ -358,8 +363,8 @@ public class HttpURLConnectionImpl extends OkHttpConnection {
             }
             // fall-through
         case HTTP_UNAUTHORIZED:
-            boolean credentialsFound = processAuthHeader(getResponseCode(),
-                    httpEngine.getResponseHeaders(), rawRequestHeaders);
+            boolean credentialsFound = HttpAuthenticator.processAuthHeader(getResponseCode(),
+                    httpEngine.getResponseHeaders().getHeaders(), rawRequestHeaders, proxy, url);
             return credentialsFound ? Retry.SAME_CONNECTION : Retry.NONE;
 
         case HTTP_MULT_CHOICE:
@@ -391,70 +396,6 @@ public class HttpURLConnectionImpl extends OkHttpConnection {
         default:
             return Retry.NONE;
         }
-    }
-
-    /**
-     * React to a failed authorization response by looking up new credentials.
-     *
-     * @return true if credentials have been added to successorRequestHeaders
-     *     and another request should be attempted.
-     */
-    final boolean processAuthHeader(int responseCode, ResponseHeaders response,
-            RawHeaders successorRequestHeaders) throws IOException {
-        if (responseCode != HTTP_PROXY_AUTH && responseCode != HTTP_UNAUTHORIZED) {
-            throw new IllegalArgumentException();
-        }
-
-        // keep asking for username/password until authorized
-        String challengeHeader = responseCode == HTTP_PROXY_AUTH
-                ? "Proxy-Authenticate"
-                : "WWW-Authenticate";
-        String credentials = getAuthorizationCredentials(response.getHeaders(), challengeHeader);
-        if (credentials == null) {
-            return false; // could not find credentials, end request cycle
-        }
-
-        // add authorization credentials, bypassing the already-connected check
-        String fieldName = responseCode == HTTP_PROXY_AUTH
-                ? "Proxy-Authorization"
-                : "Authorization";
-        successorRequestHeaders.set(fieldName, credentials);
-        return true;
-    }
-
-    /**
-     * Returns the authorization credentials on the base of provided challenge.
-     */
-    private String getAuthorizationCredentials(RawHeaders responseHeaders, String challengeHeader)
-            throws IOException {
-        List<Challenge> challenges = HeaderParser.parseChallenges(responseHeaders, challengeHeader);
-        if (challenges.isEmpty()) {
-            throw new IOException("No authentication challenges found");
-        }
-
-        for (Challenge challenge : challenges) {
-            // use the global authenticator to get the password
-            PasswordAuthentication auth = Authenticator.requestPasswordAuthentication(
-                    getConnectToInetAddress(), getConnectToPort(), url.getProtocol(),
-                    challenge.realm, challenge.scheme);
-            if (auth == null) {
-                continue;
-            }
-
-            // base64 encode the username and password
-            String usernameAndPassword = auth.getUserName() + ":" + new String(auth.getPassword());
-            byte[] bytes = usernameAndPassword.getBytes("ISO-8859-1");
-            String encoded = Base64.encode(bytes);
-            return challenge.scheme + " " + encoded;
-        }
-
-        return null;
-    }
-
-    private InetAddress getConnectToInetAddress() throws IOException {
-        return usingProxy()
-                ? ((InetSocketAddress) proxy.address()).getAddress()
-                : InetAddress.getByName(getURL().getHost());
     }
 
     final int getDefaultPort() {
