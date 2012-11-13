@@ -18,6 +18,8 @@
 package libcore.net.http;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -28,6 +30,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeMap;
+import libcore.io.Streams;
 import libcore.util.Libcore;
 
 /**
@@ -63,6 +66,7 @@ public final class RawHeaders {
     };
 
     private final List<String> namesAndValues = new ArrayList<String>(20);
+    private String requestLine;
     private String statusLine;
     private int httpMinorVersion = 1;
     private int responseCode = -1;
@@ -73,6 +77,7 @@ public final class RawHeaders {
 
     public RawHeaders(RawHeaders copyFrom) {
         namesAndValues.addAll(copyFrom.namesAndValues);
+        requestLine = copyFrom.requestLine;
         statusLine = copyFrom.statusLine;
         httpMinorVersion = copyFrom.httpMinorVersion;
         responseCode = copyFrom.responseCode;
@@ -80,32 +85,38 @@ public final class RawHeaders {
     }
 
     /**
-     * Sets the response status line (like "HTTP/1.0 200 OK") or request line
-     * (like "GET / HTTP/1.1").
+     * Sets the request line (like "GET / HTTP/1.1").
      */
-    public void setStatusLine(String statusLine) {
-        statusLine = statusLine.trim();
-        this.statusLine = statusLine;
+    public void setRequestLine(String requestLine) {
+        requestLine = requestLine.trim();
+        this.requestLine = requestLine;
+    }
 
-        if (statusLine == null || !statusLine.startsWith("HTTP/")) {
-            return;
+    /**
+     * Sets the response status line (like "HTTP/1.0 200 OK").
+     */
+    public void setStatusLine(String statusLine) throws IOException {
+        // H T T P / 1 . 1   2 0 0   T e m p o r a r y   R e d i r e c t
+        // 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0
+        if (!statusLine.startsWith("HTTP/1.")
+                || statusLine.charAt(8) != ' '
+                || statusLine.charAt(12) != ' ') {
+            throw new IOException("Unexpected status line: " + statusLine);
         }
-        statusLine = statusLine.trim();
-        int mark = statusLine.indexOf(" ") + 1;
-        if (mark == 0) {
-            return;
+        int httpMinorVersion = statusLine.charAt(7) - '0';
+        if (httpMinorVersion < 0 || httpMinorVersion > 9) {
+            throw new IOException("Unexpected status line: " + statusLine);
         }
-        if (statusLine.charAt(mark - 2) != '1') {
-            this.httpMinorVersion = 0;
+        int responseCode;
+        try {
+            responseCode = Integer.parseInt(statusLine.substring(9, 12));
+        } catch (NumberFormatException e) {
+            throw new IOException("Unexpected status line: " + statusLine);
         }
-        int last = mark + 3;
-        if (last > statusLine.length()) {
-            last = statusLine.length();
-        }
-        this.responseCode = Integer.parseInt(statusLine.substring(mark, last));
-        if (last + 1 <= statusLine.length()) {
-            this.responseMessage = statusLine.substring(last + 1);
-        }
+        this.responseMessage = statusLine.substring(13);
+        this.responseCode = responseCode;
+        this.statusLine = statusLine;
+        this.httpMinorVersion = httpMinorVersion;
     }
 
     public void computeResponseStatusLineFromSpdyHeaders() throws IOException {
@@ -277,22 +288,49 @@ public final class RawHeaders {
         return result;
     }
 
-    public String toHeaderString() {
+    /**
+     * Returns bytes of a request header for sending on an HTTP transport.
+     */
+    public byte[] toBytes() throws UnsupportedEncodingException {
         StringBuilder result = new StringBuilder(256);
-        result.append(statusLine).append("\r\n");
+        result.append(requestLine).append("\r\n");
         for (int i = 0; i < namesAndValues.size(); i += 2) {
             result.append(namesAndValues.get(i)).append(": ")
                     .append(namesAndValues.get(i + 1)).append("\r\n");
         }
         result.append("\r\n");
-        return result.toString();
+        return result.toString().getBytes("ISO-8859-1");
+    }
+
+    /**
+     * Parses bytes of a response header from an HTTP transport.
+     */
+    public static RawHeaders fromBytes(InputStream in) throws IOException {
+        RawHeaders headers;
+        do {
+            headers = new RawHeaders();
+            headers.setStatusLine(Streams.readAsciiLine(in));
+            readHeaders(in, headers);
+        } while (headers.getResponseCode() == HttpEngine.HTTP_CONTINUE);
+        return headers;
+    }
+
+    /**
+     * Reads headers or trailers into {@code out}.
+     */
+    public static void readHeaders(InputStream in, RawHeaders out) throws IOException {
+        // parse the result headers until the first blank line
+        String line;
+        while ((line = Streams.readAsciiLine(in)).length() != 0) {
+            out.addLine(line);
+        }
     }
 
     /**
      * Returns an immutable map containing each field to its list of values. The
      * status line is mapped to null.
      */
-    public Map<String, List<String>> toMultimap() {
+    public Map<String, List<String>> toMultimap(boolean response) {
         Map<String, List<String>> result = new TreeMap<String, List<String>>(FIELD_NAME_COMPARATOR);
         for (int i = 0; i < namesAndValues.size(); i += 2) {
             String fieldName = namesAndValues.get(i);
@@ -306,8 +344,10 @@ public final class RawHeaders {
             allValues.add(value);
             result.put(fieldName, Collections.unmodifiableList(allValues));
         }
-        if (statusLine != null) {
+        if (response && statusLine != null) {
             result.put(null, Collections.unmodifiableList(Collections.singletonList(statusLine)));
+        } else if (requestLine != null) {
+            result.put(null, Collections.unmodifiableList(Collections.singletonList(requestLine)));
         }
         return Collections.unmodifiableMap(result);
     }
@@ -317,7 +357,9 @@ public final class RawHeaders {
      * present, the null field's last element will be used to set the status
      * line.
      */
-    public static RawHeaders fromMultimap(Map<String, List<String>> map) {
+    public static RawHeaders fromMultimap(Map<String, List<String>> map, boolean response)
+            throws IOException {
+        if (!response) throw new UnsupportedOperationException();
         RawHeaders result = new RawHeaders();
         for (Entry<String, List<String>> entry : map.entrySet()) {
             String fieldName = entry.getKey();
@@ -376,7 +418,7 @@ public final class RawHeaders {
             String name = nameValueBlock.get(i);
             String values = nameValueBlock.get(i + 1);
             for (int start = 0; start < values.length();) {
-                int end = values.indexOf(start, '\0');
+                int end = values.indexOf('\0', start);
                 if (end == -1) {
                     end = values.length();
                 }

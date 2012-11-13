@@ -21,85 +21,109 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import libcore.io.Streams;
+
+import static libcore.net.spdy.Threads.newThreadFactory;
 
 /**
  * A socket connection to a remote peer. A connection hosts streams which can
  * send and receive data.
+ *
+ * <p>Many methods in this API are <strong>synchronous:</strong> the call is
+ * completed before the method returns. This is typical for Java but atypical
+ * for SPDY. This is motivated by exception transparency: an IOException that
+ * was triggered by a certain caller can be caught and handled by that caller.
  */
 public final class SpdyConnection implements Closeable {
 
     /*
-     * Socket writes are guarded by this. Socket reads are unguarded but are
-     * only made by the reader thread.
+     * Internal state of this connection is guarded by 'this'. No blocking
+     * operations may be performed while holding this lock!
+     *
+     * Socket writes are guarded by spdyWriter.
+     *
+     * Socket reads are unguarded but are only made by the reader thread.
+     *
+     * Certain operations (like SYN_STREAM) need to synchronize on both the
+     * spdyWriter (to do blocking I/O) and this (to create streams). Such
+     * operations must synchronize on 'this' last. This ensures that we never
+     * wait for a blocking operation while holding 'this'.
      */
 
-    static final int FLAG_FIN = 0x01;
-    static final int FLAG_UNIDIRECTIONAL = 0x02;
+    static final int FLAG_FIN = 0x1;
+    static final int FLAG_UNIDIRECTIONAL = 0x2;
 
-    static final int TYPE_EOF = -1;
-    static final int TYPE_DATA = 0x00;
-    static final int TYPE_SYN_STREAM = 0x01;
-    static final int TYPE_SYN_REPLY = 0x02;
-    static final int TYPE_RST_STREAM = 0x03;
-    static final int TYPE_SETTINGS = 0x04;
-    static final int TYPE_NOOP = 0x05;
-    static final int TYPE_PING = 0x06;
-    static final int TYPE_GOAWAY = 0x07;
-    static final int TYPE_HEADERS = 0x08;
+    static final int TYPE_DATA = 0x0;
+    static final int TYPE_SYN_STREAM = 0x1;
+    static final int TYPE_SYN_REPLY = 0x2;
+    static final int TYPE_RST_STREAM = 0x3;
+    static final int TYPE_SETTINGS = 0x4;
+    static final int TYPE_NOOP = 0x5;
+    static final int TYPE_PING = 0x6;
+    static final int TYPE_GOAWAY = 0x7;
+    static final int TYPE_HEADERS = 0x8;
     static final int VERSION = 2;
 
-    /** Guarded by this. */
-    private int nextStreamId;
-    private final SpdyReader spdyReader;
-    private final SpdyWriter spdyWriter;
-    private final Executor executor;
+    /**
+     * True if this peer initiated the connection.
+     */
+    final boolean client;
 
     /**
-     * User code to run in response to an incoming stream. This must not be run
-     * on the read thread, otherwise a deadlock is possible.
+     * User code to run in response to an incoming stream. Callbacks must not be
+     * run on the callback executor.
      */
     private final IncomingStreamHandler handler;
 
-    private final Map<Integer, SpdyStream> streams = Collections.synchronizedMap(
-            new HashMap<Integer, SpdyStream>());
+    private final SpdyReader spdyReader;
+    private final SpdyWriter spdyWriter;
+    private final ExecutorService readExecutor;
+    private final ExecutorService writeExecutor;
+    private final ExecutorService callbackExecutor;
+
+    private final Map<Integer, SpdyStream> streams = new HashMap<Integer, SpdyStream>();
+    private int nextStreamId;
+
+    /** Lazily-created map of in-flight pings awaiting a response. Guarded by this. */
+    private Map<Integer, Ping> pings;
+    private int nextPingId;
+
+    /** Lazily-created settings for this connection. */
+    Settings settings;
 
     private SpdyConnection(Builder builder) {
-        nextStreamId = builder.client ? 1 : 2;
+        client = builder.client;
+        handler = builder.handler;
         spdyReader = new SpdyReader(builder.in);
         spdyWriter = new SpdyWriter(builder.out);
-        handler = builder.handler;
+        nextStreamId = builder.client ? 1 : 2;
+        nextPingId = builder.client ? 1 : 2;
 
-        String name = isClient() ? "ClientReader" : "ServerReader";
-        executor = builder.executor != null
-                ? builder.executor
-                : Executors.newCachedThreadPool(Threads.newThreadFactory(name));
-        executor.execute(new Reader());
+        String prefix = builder.client ? "Spdy Client " : "Spdy Server ";
+        readExecutor = new ThreadPoolExecutor(1, 1, 60, TimeUnit.SECONDS,
+                new SynchronousQueue<Runnable>(), newThreadFactory(prefix + "Reader", false));
+        writeExecutor = new ThreadPoolExecutor(0, 1, 60, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(), newThreadFactory(prefix + "Writer", false));
+        callbackExecutor = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60, TimeUnit.SECONDS,
+                new SynchronousQueue<Runnable>(), newThreadFactory(prefix + "Callbacks", false));
+
+        readExecutor.execute(new Reader());
     }
 
-    /**
-     * Returns true if this peer initiated the connection.
-     */
-    public boolean isClient() {
-        return nextStreamId % 2 == 1;
+    private synchronized SpdyStream getStream(int id) {
+        return streams.get(id);
     }
 
-    private SpdyStream getStream(int id) {
-        SpdyStream stream = streams.get(id);
-        if (stream == null) {
-            throw new UnsupportedOperationException("TODO " + id + "; " + streams); // TODO: rst stream
-        }
-        return stream;
-    }
-
-    void removeStream(int streamId) {
-        streams.remove(streamId);
+    synchronized SpdyStream removeStream(int streamId) {
+        return streams.remove(streamId);
     }
 
     /**
@@ -110,42 +134,43 @@ public final class SpdyConnection implements Closeable {
      * @param in true to create an input stream that the remote peer can use to
      *     send data to us. Corresponds to {@code FLAG_UNIDIRECTIONAL}.
      */
-    public synchronized SpdyStream newStream(List<String> requestHeaders, boolean out, boolean in)
+    public SpdyStream newStream(List<String> requestHeaders, boolean out, boolean in)
             throws IOException {
-        int streamId = nextStreamId; // TODO
-        nextStreamId += 2;
         int flags = (out ? 0 : FLAG_FIN) | (in ? 0 : FLAG_UNIDIRECTIONAL);
-        int associatedStreamId = 0;  // TODO
-        int priority = 0; // TODO
+        int associatedStreamId = 0;  // TODO: permit the caller to specify an associated stream.
+        int priority = 0; // TODO: permit the caller to specify a priority.
+        SpdyStream stream;
+        int streamId;
 
-        SpdyStream result = new SpdyStream(streamId, this, requestHeaders, flags);
-        streams.put(streamId, result);
+        synchronized (spdyWriter) {
+            synchronized (this) {
+                streamId = nextStreamId;
+                nextStreamId += 2;
+                stream = new SpdyStream(streamId, this, requestHeaders, flags);
+                streams.put(streamId, stream);
+            }
 
-        spdyWriter.flags = flags;
-        spdyWriter.streamId = streamId;
-        spdyWriter.associatedStreamId = associatedStreamId;
-        spdyWriter.priority = priority;
-        spdyWriter.nameValueBlock = requestHeaders;
-        spdyWriter.synStream();
+            spdyWriter.synStream(flags, streamId, associatedStreamId, priority, requestHeaders);
+        }
 
-        return result;
+        return stream;
     }
 
-    synchronized void writeSynReply(int streamId, List<String> alternating) throws IOException {
-        int flags = 0; // TODO
-        spdyWriter.flags = flags;
-        spdyWriter.streamId = streamId;
-        spdyWriter.nameValueBlock = alternating;
-        spdyWriter.synReply();
+    void writeSynReply(int streamId, int flags, List<String> alternating) throws IOException {
+        synchronized (spdyWriter) {
+            spdyWriter.synReply(flags, streamId, alternating);
+        }
     }
 
     /** Writes a complete data frame. */
-    synchronized void writeFrame(byte[] bytes, int offset, int length) throws IOException {
-        spdyWriter.out.write(bytes, offset, length);
+    void writeFrame(byte[] bytes, int offset, int length) throws IOException {
+        synchronized (spdyWriter) {
+            spdyWriter.out.write(bytes, offset, length);
+        }
     }
 
     void writeSynResetLater(final int streamId, final int statusCode) {
-        executor.execute(new Runnable() {
+        writeExecutor.execute(new Runnable() {
             @Override public void run() {
                 try {
                     writeSynReset(streamId, statusCode);
@@ -155,31 +180,84 @@ public final class SpdyConnection implements Closeable {
         });
     }
 
-    synchronized void writeSynReset(int streamId, int statusCode) throws IOException {
-        int flags = 0; // TODO
-        spdyWriter.flags = flags;
-        spdyWriter.streamId = streamId;
-        spdyWriter.statusCode = statusCode;
-        spdyWriter.synReset();
+    void writeSynReset(int streamId, int statusCode) throws IOException {
+        synchronized (spdyWriter) {
+            spdyWriter.synReset(streamId, statusCode);
+        }
     }
 
-    public synchronized void flush() throws IOException {
-        spdyWriter.out.flush();
+    /**
+     * Sends a ping frame to the peer. Use the returned object to await the
+     * ping's response and observe its round trip time.
+     */
+    public Ping ping() throws IOException {
+        Ping ping = new Ping();
+        int pingId;
+        synchronized (this) {
+            pingId = nextPingId;
+            nextPingId += 2;
+            if (pings == null) pings = new HashMap<Integer, Ping>();
+            pings.put(pingId, ping);
+        }
+        writePing(pingId, ping);
+        return ping;
     }
 
-    @Override public synchronized void close() throws IOException {
+    private void writePingLater(final int id, final Ping ping) {
+        writeExecutor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    writePing(id, ping);
+                } catch (IOException ignored) {
+                }
+            }
+        });
+    }
+
+    private void writePing(int id, Ping ping) throws IOException {
+        synchronized (spdyWriter) {
+            // Observe the sent time immediately before performing I/O.
+            if (ping != null) ping.send();
+            spdyWriter.ping(0, id);
+        }
+    }
+
+    private synchronized Ping removePing(int id) {
+        return pings != null ? pings.remove(id) : null;
+    }
+
+    /**
+     * Sends a noop frame to the peer.
+     */
+    public void noop() throws IOException {
+        synchronized (spdyWriter) {
+            spdyWriter.noop();
+        }
+    }
+
+    public void flush() throws IOException {
+        synchronized (spdyWriter) {
+            spdyWriter.out.flush();
+        }
+    }
+
+    @Override public void close() throws IOException {
+        close(null);
+    }
+
+    private synchronized void close(Throwable reason) throws IOException {
+        // TODO: forward 'reason' to forced closed streams?
         // TODO: graceful close; send RST frames
         // TODO: close all streams to release waiting readers
-        if (executor instanceof ExecutorService) {
-            ((ExecutorService) executor).shutdown();
-        }
+        writeExecutor.shutdown();
+        readExecutor.shutdown();
+        callbackExecutor.shutdown();
     }
 
     public static class Builder {
         private InputStream in;
         private OutputStream out;
         private IncomingStreamHandler handler = IncomingStreamHandler.REFUSE_INCOMING_STREAMS;
-        private Executor executor;
         public boolean client;
 
         /**
@@ -200,11 +278,6 @@ public final class SpdyConnection implements Closeable {
             this.out = out;
         }
 
-        public Builder executor(Executor executor) {
-            this.executor = executor;
-            return this;
-        }
-
         public Builder handler(IncomingStreamHandler handler) {
             this.handler = handler;
             return this;
@@ -215,68 +288,104 @@ public final class SpdyConnection implements Closeable {
         }
     }
 
-    private class Reader implements Runnable {
+    private class Reader implements Runnable, SpdyReader.Handler {
         @Override public void run() {
+            Throwable failure = null;
             try {
-                while (readFrame()) {
+                while (spdyReader.nextFrame(this)) {
                 }
-                close();
             } catch (Throwable e) {
-                e.printStackTrace(); // TODO
+                failure = e;
+            }
+
+            try {
+                close(failure);
+            } catch (IOException ignored) {
             }
         }
 
-        private boolean readFrame() throws IOException {
-            switch (spdyReader.nextFrame()) {
-            case TYPE_EOF:
-                return false;
+        @Override public void data(int flags, int streamId, InputStream in, int length)
+                throws IOException {
+            SpdyStream dataStream = getStream(streamId);
+            if (dataStream != null) {
+                dataStream.receiveData(in, flags, length);
+            } else {
+                writeSynResetLater(streamId, SpdyStream.RST_INVALID_STREAM);
+                Streams.skipByReading(in, length);
+            }
+        }
 
-            case TYPE_DATA:
-                getStream(spdyReader.streamId)
-                        .receiveData(spdyReader.in, spdyReader.flags, spdyReader.length);
-                return true;
-
-            case TYPE_SYN_STREAM:
-                final SpdyStream stream = new SpdyStream(spdyReader.streamId, SpdyConnection.this,
-                        spdyReader.nameValueBlock, spdyReader.flags);
-                SpdyStream previous = streams.put(spdyReader.streamId, stream);
-                if (previous != null) {
-                    previous.close(SpdyStream.RST_PROTOCOL_ERROR);
-                }
-                executor.execute(new Runnable() {
+        @Override public void synStream(int flags, int streamId, int associatedStreamId,
+                int priority, List<String> nameValueBlock) {
+            final SpdyStream synStream = new SpdyStream(streamId, SpdyConnection.this,
+                    nameValueBlock, flags);
+            final SpdyStream previous;
+            synchronized (SpdyConnection.this) {
+                previous = streams.put(streamId, synStream);
+            }
+            if (previous != null) {
+                writeExecutor.execute(new Runnable() {
                     @Override public void run() {
                         try {
-                            handler.receive(stream);
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
+                            previous.close(SpdyStream.RST_PROTOCOL_ERROR);
+                        } catch (IOException ignored) {
                         }
                     }
                 });
-                return true;
+                return;
+            }
+            callbackExecutor.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        handler.receive(synStream);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            });
+        }
 
-            case TYPE_SYN_REPLY:
-                // TODO: honor flags
-                getStream(spdyReader.streamId).receiveReply(spdyReader.nameValueBlock);
-                return true;
+        @Override public void synReply(int flags, int streamId, List<String> nameValueBlock)
+                throws IOException {
+            SpdyStream replyStream = getStream(streamId);
+            if (replyStream != null) {
+                // TODO: honor incoming FLAG_FIN.
+                replyStream.receiveReply(nameValueBlock);
+            } else {
+                writeSynResetLater(streamId, SpdyStream.RST_INVALID_STREAM);
+            }
+        }
 
-            case TYPE_RST_STREAM:
-                getStream(spdyReader.streamId).receiveRstStream(spdyReader.statusCode);
-                return true;
+        @Override public void rstStream(int flags, int streamId, int statusCode) {
+            SpdyStream rstStream = removeStream(streamId);
+            if (rstStream != null) {
+                rstStream.receiveRstStream(statusCode);
+            }
+        }
 
-            case SpdyConnection.TYPE_SETTINGS:
-                // TODO: implement
-                System.out.println("Unimplemented TYPE_SETTINGS frame discarded");
-                return true;
+        @Override public void settings(int flags, Settings newSettings) {
+            synchronized (SpdyConnection.this) {
+                if (settings == null
+                        || (flags & Settings.FLAG_CLEAR_PREVIOUSLY_PERSISTED_SETTINGS) != 0) {
+                    settings = newSettings;
+                } else {
+                    settings.merge(newSettings);
+                }
+            }
+        }
 
-            case SpdyConnection.TYPE_NOOP:
-            case SpdyConnection.TYPE_PING:
-            case SpdyConnection.TYPE_GOAWAY:
-            case SpdyConnection.TYPE_HEADERS:
-                throw new UnsupportedOperationException();
+        @Override public void noop() {
+        }
 
-            default:
-                // TODO: throw IOException here?
-                return false;
+        @Override public void ping(int flags, int streamId) {
+            if (client != (streamId % 2 == 1)) {
+                // Respond to a client ping if this is a server and vice versa.
+                writePingLater(streamId, null);
+            } else {
+                Ping ping = removePing(streamId);
+                if (ping != null) {
+                    ping.receive();
+                }
             }
         }
     }

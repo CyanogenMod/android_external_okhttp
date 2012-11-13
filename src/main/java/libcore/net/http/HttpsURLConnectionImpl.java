@@ -29,10 +29,9 @@ import java.net.URL;
 import java.security.Permission;
 import java.security.Principal;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.util.List;
 import java.util.Map;
-import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
@@ -419,89 +418,8 @@ public final class HttpsURLConnectionImpl extends OkHttpsConnection {
                 HttpConnection connection, RetryableOutputStream requestBody,
                 HttpsURLConnectionImpl enclosing) throws IOException {
             super(policy, method, requestHeaders, connection, requestBody);
-            this.sslSocket = connection != null ? connection.getSecureSocketIfConnected() : null;
+            this.sslSocket = connection != null ? (SSLSocket) connection.getSocket() : null;
             this.enclosing = enclosing;
-        }
-
-        @Override protected void connect() throws IOException {
-            // First try an SSL connection with compression and various TLS
-            // extensions enabled, if it fails (and its not unheard of that it
-            // will) fallback to a barebones connection.
-            try {
-                makeSslConnection(true);
-            } catch (IOException e) {
-                // If the problem was a CertificateException from the X509TrustManager,
-                // do not retry, we didn't have an abrupt server initiated exception.
-                if (e instanceof SSLHandshakeException
-                        && e.getCause() instanceof CertificateException) {
-                    throw e;
-                }
-                release(false);
-                makeSslConnection(false);
-            }
-        }
-
-        /**
-         * Attempt to make an HTTPS connection.
-         *
-         * @param tlsTolerant If true, assume server can handle common
-         * TLS extensions and SSL deflate compression. If false, use
-         * an SSL3 only fallback mode without compression.
-         */
-        private void makeSslConnection(boolean tlsTolerant) throws IOException {
-            // make an SSL Tunnel on the first message pair of each SSL + proxy connection
-            if (connection == null) {
-                connection = openSocketConnection();
-                if (connection.getAddress().getProxy() != null) {
-                    makeTunnel(policy, connection, getRequestHeaders());
-                }
-            }
-
-            // if super.makeConnection returned a connection from the
-            // pool, sslSocket needs to be initialized here. If it is
-            // a new connection, it will be initialized by
-            // getSecureSocket below.
-            sslSocket = connection.getSecureSocketIfConnected();
-
-            // we already have an SSL connection,
-            if (sslSocket != null) {
-                return;
-            }
-
-            sslSocket = connection.setupSecureSocket(
-                    enclosing.getSSLSocketFactory(), enclosing.getHostnameVerifier(), tlsTolerant);
-        }
-
-        /**
-         * To make an HTTPS connection over an HTTP proxy, send an unencrypted
-         * CONNECT request to create the proxy connection. This may need to be
-         * retried if the proxy requires authorization.
-         */
-        private void makeTunnel(HttpURLConnectionImpl policy, HttpConnection connection,
-                RequestHeaders requestHeaders) throws IOException {
-            RawHeaders rawRequestHeaders = requestHeaders.getHeaders();
-            while (true) {
-                HttpEngine connect = new ProxyConnectEngine(policy, rawRequestHeaders, connection);
-                connect.sendRequest();
-                connect.readResponse();
-
-                int responseCode = connect.getResponseCode();
-                switch (connect.getResponseCode()) {
-                case HTTP_OK:
-                    return;
-                case HTTP_PROXY_AUTH:
-                    rawRequestHeaders = new RawHeaders(rawRequestHeaders);
-                    boolean credentialsFound = policy.processAuthHeader(HTTP_PROXY_AUTH,
-                            connect.getResponseHeaders(), rawRequestHeaders);
-                    if (credentialsFound) {
-                        continue;
-                    } else {
-                        throw new IOException("Failed to authenticate with proxy");
-                    }
-                default:
-                    throw new IOException("Unexpected response code for CONNECT: " + responseCode);
-                }
-            }
         }
 
         @Override protected boolean acceptCacheResponseType(CacheResponse cacheResponse) {
@@ -517,19 +435,28 @@ public final class HttpsURLConnectionImpl extends OkHttpsConnection {
             return enclosing.getSSLSocketFactory();
         }
 
+        @Override protected HostnameVerifier getHostnameVerifier() {
+            return enclosing.getHostnameVerifier();
+        }
+
         @Override protected OkHttpConnection getHttpConnectionToCache() {
             return enclosing;
         }
-    }
 
-    private static class ProxyConnectEngine extends HttpEngine {
-        public ProxyConnectEngine(HttpURLConnectionImpl policy, RawHeaders requestHeaders,
-                HttpConnection connection) throws IOException {
-            super(policy, HttpEngine.CONNECT, requestHeaders, connection, null);
-        }
+        @Override protected HttpConnection.TunnelConfig getTunnelConfig() {
+            String host = requestHeaders.getHost();
+            if (host == null) {
+                host = HttpEngine.getOriginAddress(policy.getURL());
+            }
 
-        @Override protected boolean requiresTunnel() {
-            return true;
+            String userAgent = requestHeaders.getUserAgent();
+            if (userAgent == null) {
+                userAgent = HttpEngine.getDefaultUserAgent();
+            }
+
+            String proxyAuthorization = requestHeaders.getProxyAuthorization();
+            return new HttpConnection.TunnelConfig(
+                    policy.getURL(), host, userAgent, proxyAuthorization);
         }
     }
 }
