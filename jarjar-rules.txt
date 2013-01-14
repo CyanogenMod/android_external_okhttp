@@ -1,1 +1,1 @@
-rule libcore.** libcoreunbundled.@1
+rule com.squareup.** com.android.@1
