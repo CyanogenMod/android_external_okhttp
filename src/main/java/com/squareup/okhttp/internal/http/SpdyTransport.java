@@ -22,64 +22,67 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.CacheRequest;
+import java.net.URL;
 import java.util.List;
 
 public final class SpdyTransport implements Transport {
-    private final HttpEngine httpEngine;
-    private final SpdyConnection spdyConnection;
-    private SpdyStream stream;
+  private final HttpEngine httpEngine;
+  private final SpdyConnection spdyConnection;
+  private SpdyStream stream;
 
-    // TODO: set sentMillis
-    // TODO: set cookie stuff
+  public SpdyTransport(HttpEngine httpEngine, SpdyConnection spdyConnection) {
+    this.httpEngine = httpEngine;
+    this.spdyConnection = spdyConnection;
+  }
 
-    public SpdyTransport(HttpEngine httpEngine, SpdyConnection spdyConnection) {
-        this.httpEngine = httpEngine;
-        this.spdyConnection = spdyConnection;
+  @Override public OutputStream createRequestBody() throws IOException {
+    // TODO: if we aren't streaming up to the server, we should buffer the whole request
+    writeRequestHeaders();
+    return stream.getOutputStream();
+  }
+
+  @Override public void writeRequestHeaders() throws IOException {
+    if (stream != null) {
+      return;
     }
+    httpEngine.writingRequestHeaders();
+    RawHeaders requestHeaders = httpEngine.requestHeaders.getHeaders();
+    String version = httpEngine.connection.getHttpMinorVersion() == 1 ? "HTTP/1.1" : "HTTP/1.0";
+    URL url = httpEngine.policy.getURL();
+    requestHeaders.addSpdyRequestHeaders(httpEngine.method, HttpEngine.requestPath(url), version,
+        HttpEngine.getOriginAddress(url), httpEngine.uri.getScheme());
+    boolean hasRequestBody = httpEngine.hasRequestBody();
+    boolean hasResponseBody = true;
+    stream = spdyConnection.newStream(requestHeaders.toNameValueBlock(), hasRequestBody,
+        hasResponseBody);
+    stream.setReadTimeout(httpEngine.policy.getReadTimeout());
+  }
 
-    @Override public OutputStream createRequestBody() throws IOException {
-        // TODO: if we aren't streaming up to the server, we should buffer the whole request
-        writeRequestHeaders();
-        return stream.getOutputStream();
-    }
+  @Override public void writeRequestBody(RetryableOutputStream requestBody) throws IOException {
+    throw new UnsupportedOperationException();
+  }
 
-    @Override public void writeRequestHeaders() throws IOException {
-        if (stream != null) {
-            return;
-        }
-        RawHeaders requestHeaders = httpEngine.requestHeaders.getHeaders();
-        String version = httpEngine.connection.getHttpMinorVersion() == 1 ? "HTTP/1.1" : "HTTP/1.0";
-        requestHeaders.addSpdyRequestHeaders(httpEngine.method, httpEngine.uri.getScheme(),
-                HttpEngine.requestPath(httpEngine.policy.getURL()), version);
-        boolean hasRequestBody = httpEngine.hasRequestBody();
-        boolean hasResponseBody = true;
-        stream = spdyConnection.newStream(requestHeaders.toNameValueBlock(),
-                hasRequestBody, hasResponseBody);
-        stream.setReadTimeout(httpEngine.policy.getReadTimeout());
-    }
+  @Override public void flushRequest() throws IOException {
+    stream.getOutputStream().close();
+  }
 
-    @Override public void writeRequestBody(RetryableOutputStream requestBody) throws IOException {
-        throw new UnsupportedOperationException();
-    }
+  @Override public ResponseHeaders readResponseHeaders() throws IOException {
+    List<String> nameValueBlock = stream.getResponseHeaders();
+    RawHeaders rawHeaders = RawHeaders.fromNameValueBlock(nameValueBlock);
+    rawHeaders.computeResponseStatusLineFromSpdyHeaders();
+    httpEngine.receiveHeaders(rawHeaders);
+    return new ResponseHeaders(httpEngine.uri, rawHeaders);
+  }
 
-    @Override public void flushRequest() throws IOException {
-        stream.getOutputStream().close();
-    }
+  @Override public InputStream getTransferStream(CacheRequest cacheRequest) throws IOException {
+    return new UnknownLengthHttpInputStream(stream.getInputStream(), cacheRequest, httpEngine);
+  }
 
-    @Override public ResponseHeaders readResponseHeaders() throws IOException {
-        // TODO: fix the SPDY implementation so this throws a (buffered) IOException
-        List<String> nameValueBlock = stream.getResponseHeaders();
-        RawHeaders rawHeaders = RawHeaders.fromNameValueBlock(nameValueBlock);
-        rawHeaders.computeResponseStatusLineFromSpdyHeaders();
-        return new ResponseHeaders(httpEngine.uri, rawHeaders);
+  @Override public boolean makeReusable(boolean streamCancelled, OutputStream requestBodyOut,
+      InputStream responseBodyIn) {
+    if (streamCancelled) {
+      stream.closeLater(SpdyStream.RST_CANCEL);
     }
-
-    @Override public InputStream getTransferStream(CacheRequest cacheRequest) throws IOException {
-        // TODO: handle HTTP responses that don't have a response body
-        return stream.getInputStream();
-    }
-
-    @Override public boolean makeReusable(OutputStream requestBodyOut, InputStream responseBodyIn) {
-        return true;
-    }
+    return true;
+  }
 }
