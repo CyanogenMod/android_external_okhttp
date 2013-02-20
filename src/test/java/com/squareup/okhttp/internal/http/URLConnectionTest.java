@@ -61,6 +61,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
@@ -1540,6 +1541,7 @@ public final class URLConnectionTest {
         .setBody("This page has moved!"));
     server.play();
 
+    client.setFollowProtocolRedirects(false);
     client.setSSLSocketFactory(sslContext.getSocketFactory());
     client.setHostnameVerifier(new RecordingHostnameVerifier());
     HttpURLConnection connection = client.open(server.getUrl("/"));
@@ -1552,13 +1554,72 @@ public final class URLConnectionTest {
         .setBody("This page has moved!"));
     server.play();
 
+    client.setFollowProtocolRedirects(false);
     HttpURLConnection connection = client.open(server.getUrl("/"));
     assertEquals("This page has moved!", readAscii(connection.getInputStream(), Integer.MAX_VALUE));
   }
 
+  @Test public void redirectedFromHttpsToHttpFollowingProtocolRedirects() throws Exception {
+    server2 = new MockWebServer();
+    server2.enqueue(new MockResponse().setBody("This is insecure HTTP!"));
+    server2.play();
+
+    server.useHttps(sslContext.getSocketFactory(), false);
+    server.enqueue(new MockResponse().setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
+        .addHeader("Location: " + server2.getUrl("/"))
+        .setBody("This page has moved!"));
+    server.play();
+
+    client.setSSLSocketFactory(sslContext.getSocketFactory());
+    client.setHostnameVerifier(new RecordingHostnameVerifier());
+    client.setFollowProtocolRedirects(true);
+    HttpsURLConnection connection = (HttpsURLConnection) client.open(server.getUrl("/"));
+    assertContent("This is insecure HTTP!", connection);
+    assertNull(connection.getCipherSuite());
+    assertNull(connection.getLocalCertificates());
+    assertNull(connection.getServerCertificates());
+    assertNull(connection.getPeerPrincipal());
+    assertNull(connection.getLocalPrincipal());
+  }
+
+  @Test public void redirectedFromHttpToHttpsFollowingProtocolRedirects() throws Exception {
+    server2 = new MockWebServer();
+    server2.useHttps(sslContext.getSocketFactory(), false);
+    server2.enqueue(new MockResponse().setBody("This is secure HTTPS!"));
+    server2.play();
+
+    server.enqueue(new MockResponse().setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
+        .addHeader("Location: " + server2.getUrl("/"))
+        .setBody("This page has moved!"));
+    server.play();
+
+    client.setSSLSocketFactory(sslContext.getSocketFactory());
+    client.setHostnameVerifier(new RecordingHostnameVerifier());
+    client.setFollowProtocolRedirects(true);
+    HttpURLConnection connection = client.open(server.getUrl("/"));
+    assertContent("This is secure HTTPS!", connection);
+    assertFalse(connection instanceof HttpsURLConnection);
+  }
+
   @Test public void redirectToAnotherOriginServer() throws Exception {
-    MockWebServer server2 = new MockWebServer();
+    redirectToAnotherOriginServer(false);
+  }
+
+  @Test public void redirectToAnotherOriginServerWithHttps() throws Exception {
+    redirectToAnotherOriginServer(true);
+  }
+
+  private void redirectToAnotherOriginServer(boolean https) throws Exception {
+    server2 = new MockWebServer();
+    if (https) {
+      server.useHttps(sslContext.getSocketFactory(), false);
+      server2.useHttps(sslContext.getSocketFactory(), false);
+      client.setSSLSocketFactory(sslContext.getSocketFactory());
+      client.setHostnameVerifier(new RecordingHostnameVerifier());
+    }
+
     server2.enqueue(new MockResponse().setBody("This is the 2nd server!"));
+    server2.enqueue(new MockResponse().setBody("This is the 2nd server, again!"));
     server2.play();
 
     server.enqueue(new MockResponse().setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
@@ -1568,20 +1629,47 @@ public final class URLConnectionTest {
     server.play();
 
     URLConnection connection = client.open(server.getUrl("/"));
-    assertEquals("This is the 2nd server!",
-        readAscii(connection.getInputStream(), Integer.MAX_VALUE));
+    assertContent("This is the 2nd server!", connection);
     assertEquals(server2.getUrl("/"), connection.getURL());
 
     // make sure the first server was careful to recycle the connection
-    assertEquals("This is the first server again!",
-        readAscii(client.open(server.getUrl("/")).getInputStream(), Integer.MAX_VALUE));
+    assertContent("This is the first server again!", client.open(server.getUrl("/")));
+    assertContent("This is the 2nd server, again!", client.open(server2.getUrl("/")));
 
-    RecordedRequest first = server.takeRequest();
-    assertContains(first.getHeaders(), "Host: " + hostName + ":" + server.getPort());
-    RecordedRequest second = server2.takeRequest();
-    assertContains(second.getHeaders(), "Host: " + hostName + ":" + server2.getPort());
-    RecordedRequest third = server.takeRequest();
-    assertEquals("Expected connection reuse", 1, third.getSequenceNumber());
+    String server1Host = hostName + ":" + server.getPort();
+    String server2Host = hostName + ":" + server2.getPort();
+    assertContains(server.takeRequest().getHeaders(), "Host: " + server1Host);
+    assertContains(server2.takeRequest().getHeaders(), "Host: " + server2Host);
+    assertEquals("Expected connection reuse", 1, server.takeRequest().getSequenceNumber());
+    assertEquals("Expected connection reuse", 1, server2.takeRequest().getSequenceNumber());
+  }
+
+  @Test public void redirectWithProxySelector() throws Exception {
+    final List<URI> proxySelectionRequests = new ArrayList<URI>();
+    client.setProxySelector(new ProxySelector() {
+      @Override public List<Proxy> select(URI uri) {
+        proxySelectionRequests.add(uri);
+        MockWebServer proxyServer = (uri.getPort() == server.getPort()) ? server : server2;
+        return Arrays.asList(proxyServer.toProxyAddress());
+      }
+      @Override public void connectFailed(URI uri, SocketAddress address, IOException failure) {
+        throw new AssertionError();
+      }
+    });
+
+    server2 = new MockWebServer();
+    server2.enqueue(new MockResponse().setBody("This is the 2nd server!"));
+    server2.play();
+
+    server.enqueue(new MockResponse().setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
+        .addHeader("Location: " + server2.getUrl("/b").toString())
+        .setBody("This page has moved!"));
+    server.play();
+
+    assertContent("This is the 2nd server!", client.open(server.getUrl("/a")));
+
+    assertEquals(Arrays.asList(server.getUrl("/a").toURI(), server2.getUrl("/b").toURI()),
+        proxySelectionRequests);
 
     server2.shutdown();
   }
