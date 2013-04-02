@@ -25,6 +25,9 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_src_files)
 LOCAL_JAVACFLAGS := -encoding UTF-8
 LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
+LOCAL_JAVA_LIBRARIES := core
+LOCAL_NO_STANDARD_LIBRARIES := true
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_JAVA_LIBRARY)
 
 ifeq ($(WITH_HOST_DALVIK),true)
@@ -35,5 +38,8 @@ ifeq ($(WITH_HOST_DALVIK),true)
     LOCAL_JAVACFLAGS := -encoding UTF-8
     LOCAL_BUILD_HOST_DEX := true
     LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
+    LOCAL_JAVA_LIBRARIES := core-hostdex
+    LOCAL_NO_STANDARD_LIBRARIES := true
+    LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
     include $(BUILD_HOST_JAVA_LIBRARY)
 endif
