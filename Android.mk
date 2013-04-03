@@ -19,6 +19,9 @@ okhttp_src_files := $(call all-java-files-under,src/main/java)
 okhttp_src_files := $(filter-out %/Platform.java, $(okhttp_src_files))
 okhttp_src_files += $(call all-java-files-under, android/main/java)
 
+okhttp_test_src_files := $(call all-java-files-under,src/test/java)
+okhttp_test_src_files := $(filter-out src/test/java/com/squareup/okhttp/internal/spdy/SpdyServer.java, $(okhttp_test_src_files))
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp
 LOCAL_MODULE_TAGS := optional
@@ -29,6 +32,28 @@ LOCAL_JAVA_LIBRARIES := core
 LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_JAVA_LIBRARY)
+
+# non-jarjar'd version of okhttp to compile the tests against
+include $(CLEAR_VARS)
+LOCAL_MODULE := okhttp-nojarjar
+LOCAL_MODULE_TAGS := optional
+LOCAL_SRC_FILES := $(okhttp_src_files)
+LOCAL_JAVACFLAGS := -encoding UTF-8
+LOCAL_JAVA_LIBRARIES := core
+LOCAL_NO_STANDARD_LIBRARIES := true
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_JAVA_LIBRARY)
+
+include $(CLEAR_VARS)
+LOCAL_MODULE := okhttp-tests
+LOCAL_MODULE_TAGS := optional
+LOCAL_SRC_FILES := $(okhttp_test_src_files)
+LOCAL_JAVACFLAGS := -encoding UTF-8
+LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
+LOCAL_JAVA_LIBRARIES := okhttp-nojarjar junit4-target mockwebserver bouncycastle-nojarjar
+LOCAL_NO_STANDARD_LIBRARIES := true
+LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
+include $(BUILD_STATIC_JAVA_LIBRARY)
 
 ifeq ($(WITH_HOST_DALVIK),true)
     include $(CLEAR_VARS)
