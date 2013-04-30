@@ -26,7 +26,7 @@ import java.net.URL;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import javax.net.ssl.SSLSocket;
-import org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl;
+import com.android.org.conscrypt.OpenSSLSocketImpl;
 
 /**
  * Access to proprietary Android APIs. Doesn't use reflection.
