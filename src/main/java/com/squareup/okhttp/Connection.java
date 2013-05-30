@@ -145,7 +145,8 @@ public final class Connection implements Closeable {
       platform.supportTlsIntolerantServer(sslSocket);
     }
 
-    if (modernTls) {
+    final boolean spdyEnabled = false;
+    if (modernTls && spdyEnabled) {
       platform.setNpnProtocols(sslSocket, NPN_PROTOCOLS);
     }
 
@@ -161,7 +162,7 @@ public final class Connection implements Closeable {
     in = sslSocket.getInputStream();
 
     byte[] selectedProtocol;
-    if (modernTls && (selectedProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
+    if (modernTls && spdyEnabled && (selectedProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
       if (Arrays.equals(selectedProtocol, SPDY3)) {
         sslSocket.setSoTimeout(0); // SPDY timeouts are set per-stream.
         spdyConnection = new SpdyConnection.Builder(address.getUriHost(), true, in, out).build();
