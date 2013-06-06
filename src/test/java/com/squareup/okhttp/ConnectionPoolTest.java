@@ -19,6 +19,7 @@ import com.google.mockwebserver.MockWebServer;
 import com.squareup.okhttp.internal.RecordingHostnameVerifier;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.internal.http.HttpAuthenticator;
 import com.squareup.okhttp.internal.mockspdyserver.MockSpdyServer;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -70,30 +71,33 @@ public final class ConnectionPoolTest {
 
   @Before public void setUp() throws Exception {
     httpServer.play();
-    httpAddress = new Address(httpServer.getHostName(), httpServer.getPort(), null, null, null);
+    httpAddress = new Address(httpServer.getHostName(), httpServer.getPort(), null, null,
+        HttpAuthenticator.SYSTEM_DEFAULT, null, Arrays.asList("spdy/3", "http/1.1"));
     httpSocketAddress = new InetSocketAddress(InetAddress.getByName(httpServer.getHostName()),
         httpServer.getPort());
 
     spdyServer.play();
-    spdyAddress =
-        new Address(spdyServer.getHostName(), spdyServer.getPort(), sslContext.getSocketFactory(),
-            new RecordingHostnameVerifier(), null);
+    spdyAddress = new Address(spdyServer.getHostName(), spdyServer.getPort(),
+        sslContext.getSocketFactory(), new RecordingHostnameVerifier(),
+        HttpAuthenticator.SYSTEM_DEFAULT, null, Arrays.asList("spdy/3", "http/1.1"));
     spdySocketAddress = new InetSocketAddress(InetAddress.getByName(spdyServer.getHostName()),
         spdyServer.getPort());
 
-    httpA = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    Route httpRoute = new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    Route spdyRoute = new Route(spdyAddress, Proxy.NO_PROXY, spdySocketAddress, true);
+    httpA = new Connection(httpRoute);
     httpA.connect(100, 100, null);
-    httpB = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    httpB = new Connection(httpRoute);
     httpB.connect(100, 100, null);
-    httpC = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    httpC = new Connection(httpRoute);
     httpC.connect(100, 100, null);
-    httpD = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    httpD = new Connection(httpRoute);
     httpD.connect(100, 100, null);
-    httpE = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    httpE = new Connection(httpRoute);
     httpE.connect(100, 100, null);
-    spdyA = new Connection(spdyAddress, Proxy.NO_PROXY, spdySocketAddress, true);
+    spdyA = new Connection(spdyRoute);
     spdyA.connect(100, 100, null);
-    spdyB = new Connection(spdyAddress, Proxy.NO_PROXY, spdySocketAddress, true);
+    spdyB = new Connection(spdyRoute);
     spdyB.connect(100, 100, null);
   }
 
@@ -115,7 +119,7 @@ public final class ConnectionPoolTest {
     Connection connection = pool.get(httpAddress);
     assertNull(connection);
 
-    connection = new Connection(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
+    connection = new Connection(new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true));
     connection.connect(100, 100, null);
     assertEquals(0, pool.getConnectionCount());
     pool.recycle(connection);
@@ -383,6 +387,18 @@ public final class ConnectionPoolTest {
     assertEquals(0, pool.getConnectionCount());
     assertEquals(0, pool.getHttpConnectionCount());
     assertEquals(0, pool.getSpdyConnectionCount());
+  }
+
+  @Test public void evictAllConnections() {
+    ConnectionPool pool = new ConnectionPool(10, KEEP_ALIVE_DURATION_MS);
+    pool.recycle(httpA);
+    Util.closeQuietly(httpA); // Include a closed connection in the pool.
+    pool.recycle(httpB);
+    pool.maybeShare(spdyA);
+    assertEquals(3, pool.getConnectionCount());
+
+    pool.evictAll();
+    assertEquals(0, pool.getConnectionCount());
   }
 
   private void assertPooled(ConnectionPool pool, Connection... connections) throws Exception {

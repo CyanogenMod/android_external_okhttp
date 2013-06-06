@@ -22,8 +22,12 @@ import java.net.Proxy;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
+import java.util.Arrays;
+import java.util.List;
 
 public final class HttpsHandler extends URLStreamHandler {
+    private static final List<String> ENABLED_TRANSPORTS = Arrays.asList("http/1.1");
+
     @Override protected URLConnection openConnection(URL url) throws IOException {
         return new OkHttpClient().open(url);
     }
@@ -32,7 +36,7 @@ public final class HttpsHandler extends URLStreamHandler {
         if (url == null || proxy == null) {
             throw new IllegalArgumentException("url == null || proxy == null");
         }
-        return new OkHttpClient().setProxy(proxy).open(url);
+        return new OkHttpClient().setProxy(proxy).setTransports(ENABLED_TRANSPORTS).open(url);
     }
 
     @Override protected int getDefaultPort() {

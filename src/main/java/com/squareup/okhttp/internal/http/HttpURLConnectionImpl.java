@@ -19,7 +19,11 @@ package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.ConnectionPool;
+import com.squareup.okhttp.OkAuthenticator;
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Route;
+import com.squareup.okhttp.internal.AbstractOutputStream;
+import com.squareup.okhttp.internal.FaultRecoveringOutputStream;
 import com.squareup.okhttp.internal.Util;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -32,13 +36,14 @@ import java.net.InetSocketAddress;
 import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.ProxySelector;
-import java.net.ResponseCache;
 import java.net.SocketPermission;
 import java.net.URL;
 import java.security.Permission;
 import java.security.cert.CertificateException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLSocketFactory;
@@ -60,11 +65,22 @@ import static com.squareup.okhttp.internal.Util.getEffectivePort;
  * is currently connected to a server.
  */
 public class HttpURLConnectionImpl extends HttpURLConnection {
+
+  /** Numeric status code, 307: Temporary Redirect. */
+  static final int HTTP_TEMP_REDIRECT = 307;
+
   /**
    * How many redirects should we follow? Chrome follows 21; Firefox, curl,
    * and wget follow 20; Safari follows 16; and HTTP/1.0 recommends 5.
    */
   private static final int MAX_REDIRECTS = 20;
+
+  /**
+   * The minimum number of request body bytes to transmit before we're willing
+   * to let a routine {@link IOException} bubble up to the user. This is used to
+   * size a buffer for data that will be replayed upon error.
+   */
+  private static final int MAX_REPLAY_BUFFER_LENGTH = 8192;
 
   private final boolean followProtocolRedirects;
 
@@ -73,29 +89,45 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
 
   final ProxySelector proxySelector;
   final CookieHandler cookieHandler;
-  final ResponseCache responseCache;
+  final OkResponseCache responseCache;
   final ConnectionPool connectionPool;
   /* SSL configuration; necessary for HTTP requests that get redirected to HTTPS. */
   SSLSocketFactory sslSocketFactory;
   HostnameVerifier hostnameVerifier;
+  private List<String> transports;
+  OkAuthenticator authenticator;
+  final Set<Route> failedRoutes;
 
   private final RawHeaders rawRequestHeaders = new RawHeaders();
 
   private int redirectionCount;
+  private FaultRecoveringOutputStream faultRecoveringRequestBody;
 
   protected IOException httpEngineFailure;
   protected HttpEngine httpEngine;
 
-  public HttpURLConnectionImpl(URL url, OkHttpClient client) {
+  public HttpURLConnectionImpl(URL url, OkHttpClient client, OkResponseCache responseCache,
+      Set<Route> failedRoutes) {
     super(url);
     this.followProtocolRedirects = client.getFollowProtocolRedirects();
+    this.failedRoutes = failedRoutes;
     this.requestedProxy = client.getProxy();
     this.proxySelector = client.getProxySelector();
     this.cookieHandler = client.getCookieHandler();
-    this.responseCache = client.getResponseCache();
     this.connectionPool = client.getConnectionPool();
     this.sslSocketFactory = client.getSslSocketFactory();
     this.hostnameVerifier = client.getHostnameVerifier();
+    this.transports = client.getTransports();
+    this.authenticator = client.getAuthenticator();
+    this.responseCache = responseCache;
+  }
+
+  Set<Route> getFailedRoutes() {
+    return failedRoutes;
+  }
+
+  List<String> getTransports() {
+    return transports;
   }
 
   @Override public final void connect() throws IOException {
@@ -212,14 +244,29 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
   @Override public final OutputStream getOutputStream() throws IOException {
     connect();
 
-    OutputStream result = httpEngine.getRequestBody();
-    if (result == null) {
+    OutputStream out = httpEngine.getRequestBody();
+    if (out == null) {
       throw new ProtocolException("method does not support a request body: " + method);
     } else if (httpEngine.hasResponse()) {
       throw new ProtocolException("cannot write request body after response has been read");
     }
 
-    return result;
+    if (faultRecoveringRequestBody == null) {
+      faultRecoveringRequestBody = new FaultRecoveringOutputStream(MAX_REPLAY_BUFFER_LENGTH, out) {
+        @Override protected OutputStream replacementStream(IOException e) throws IOException {
+          if (httpEngine.getRequestBody() instanceof AbstractOutputStream
+              && ((AbstractOutputStream) httpEngine.getRequestBody()).isClosed()) {
+            return null; // Don't recover once the underlying stream has been closed.
+          }
+          if (handleFailure(e)) {
+            return httpEngine.getRequestBody();
+          }
+          return null; // This is a permanent failure.
+        }
+      };
+    }
+
+    return faultRecoveringRequestBody;
   }
 
   @Override public final Permission getPermission() throws IOException {
@@ -349,27 +396,48 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
       }
       return true;
     } catch (IOException e) {
-      RouteSelector routeSelector = httpEngine.routeSelector;
-      if (routeSelector != null && httpEngine.connection != null) {
-        routeSelector.connectFailed(httpEngine.connection, e);
-      }
-      if (routeSelector == null && httpEngine.connection == null) {
-        throw e; // If we failed before finding a route or a connection, give up.
-      }
-
-      // The connection failure isn't fatal if there's another route to attempt.
-      OutputStream requestBody = httpEngine.getRequestBody();
-      if ((routeSelector == null || routeSelector.hasNext()) && isRecoverable(e) && (requestBody
-          == null || requestBody instanceof RetryableOutputStream)) {
-        httpEngine.release(true);
-        httpEngine =
-            newHttpEngine(method, rawRequestHeaders, null, (RetryableOutputStream) requestBody);
-        httpEngine.routeSelector = routeSelector; // Keep the same routeSelector.
+      if (handleFailure(e)) {
         return false;
+      } else {
+        throw e;
       }
-      httpEngineFailure = e;
-      throw e;
     }
+  }
+
+  /**
+   * Report and attempt to recover from {@code e}. Returns true if the HTTP
+   * engine was replaced and the request should be retried. Otherwise the
+   * failure is permanent.
+   */
+  private boolean handleFailure(IOException e) throws IOException {
+    RouteSelector routeSelector = httpEngine.routeSelector;
+    if (routeSelector != null && httpEngine.connection != null) {
+      routeSelector.connectFailed(httpEngine.connection, e);
+    }
+
+    OutputStream requestBody = httpEngine.getRequestBody();
+    boolean canRetryRequestBody = requestBody == null
+        || requestBody instanceof RetryableOutputStream
+        || (faultRecoveringRequestBody != null && faultRecoveringRequestBody.isRecoverable());
+    if (routeSelector == null && httpEngine.connection == null // No connection.
+        || routeSelector != null && !routeSelector.hasNext() // No more routes to attempt.
+        || !isRecoverable(e)
+        || !canRetryRequestBody) {
+      httpEngineFailure = e;
+      return false;
+    }
+
+    httpEngine.release(true);
+    RetryableOutputStream retryableOutputStream = requestBody instanceof RetryableOutputStream
+        ? (RetryableOutputStream) requestBody
+        : null;
+    httpEngine = newHttpEngine(method, rawRequestHeaders, null, retryableOutputStream);
+    httpEngine.routeSelector = routeSelector; // Keep the same routeSelector.
+    if (faultRecoveringRequestBody != null && faultRecoveringRequestBody.isRecoverable()) {
+      httpEngine.sendRequest();
+      faultRecoveringRequestBody.replaceStream(httpEngine.getRequestBody());
+    }
+    return true;
   }
 
   private boolean isRecoverable(IOException e) {
@@ -381,7 +449,7 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
     return !sslFailure && !protocolFailure;
   }
 
-  HttpEngine getHttpEngine() {
+  public HttpEngine getHttpEngine() {
     return httpEngine;
   }
 
@@ -398,28 +466,36 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
    */
   private Retry processResponseHeaders() throws IOException {
     Proxy selectedProxy = httpEngine.connection != null
-        ? httpEngine.connection.getProxy()
+        ? httpEngine.connection.getRoute().getProxy()
         : requestedProxy;
-    switch (getResponseCode()) {
+    final int responseCode = getResponseCode();
+    switch (responseCode) {
       case HTTP_PROXY_AUTH:
         if (selectedProxy.type() != Proxy.Type.HTTP) {
           throw new ProtocolException("Received HTTP_PROXY_AUTH (407) code while not using proxy");
         }
         // fall-through
       case HTTP_UNAUTHORIZED:
-        boolean credentialsFound = HttpAuthenticator.processAuthHeader(getResponseCode(),
-            httpEngine.getResponseHeaders().getHeaders(), rawRequestHeaders, selectedProxy, url);
+        boolean credentialsFound = HttpAuthenticator.processAuthHeader(authenticator,
+            getResponseCode(), httpEngine.getResponseHeaders().getHeaders(), rawRequestHeaders,
+            selectedProxy, url);
         return credentialsFound ? Retry.SAME_CONNECTION : Retry.NONE;
 
       case HTTP_MULT_CHOICE:
       case HTTP_MOVED_PERM:
       case HTTP_MOVED_TEMP:
       case HTTP_SEE_OTHER:
+      case HTTP_TEMP_REDIRECT:
         if (!getInstanceFollowRedirects()) {
           return Retry.NONE;
         }
         if (++redirectionCount > MAX_REDIRECTS) {
           throw new ProtocolException("Too many redirects: " + redirectionCount);
+        }
+        if (responseCode == HTTP_TEMP_REDIRECT && !method.equals("GET") && !method.equals("HEAD")) {
+          // "If the 307 status code is received in response to a request other than GET or HEAD,
+          // the user agent MUST NOT automatically redirect the request"
+          return Retry.NONE;
         }
         String location = getHeaderField("Location");
         if (location == null) {
@@ -476,7 +552,11 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
     if (field == null) {
       throw new NullPointerException("field == null");
     }
-    rawRequestHeaders.set(field, newValue);
+    if ("X-Android-Transports".equals(field)) {
+      setTransports(newValue, false /* append */);
+    } else {
+      rawRequestHeaders.set(field, newValue);
+    }
   }
 
   @Override public final void addRequestProperty(String field, String value) {
@@ -486,6 +566,54 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
     if (field == null) {
       throw new NullPointerException("field == null");
     }
-    rawRequestHeaders.add(field, value);
+
+    if ("X-Android-Transports".equals(field)) {
+      setTransports(value, true /* append */);
+    } else {
+      rawRequestHeaders.add(field, value);
+    }
+  }
+
+  /*
+   * Splits and validates a comma-separated string of transports.
+   * When append == false, we require that the transport list contains "http/1.1".
+   */
+  private void setTransports(String transportsString, boolean append) {
+    if (transportsString == null) {
+      throw new NullPointerException("transportsString == null");
+    }
+
+    String[] transports = transportsString.split(",", -1);
+    ArrayList<String> transportsList = new ArrayList<String>();
+    if (!append) {
+      // If we're not appending to the list, we need to make sure
+      // the list contains "http/1.1". We do this in a separate loop
+      // to avoid modifying any state before we validate the input.
+      boolean containsHttp = false;
+      for (int i = 0; i < transports.length; ++i) {
+        if ("http/1.1".equals(transports[i])) {
+          containsHttp = true;
+          break;
+        }
+      }
+
+      if (!containsHttp) {
+        throw new IllegalArgumentException("Transport list doesn't contain http/1.1");
+      }
+    } else {
+      transportsList.addAll(this.transports);
+    }
+
+    for (int i = 0; i < transports.length; ++i) {
+      if (transports[i].length() == 0) {
+        throw new IllegalArgumentException("Transport list contains an empty transport");
+      }
+
+      if (!transportsList.contains(transports[i])) {
+        transportsList.add(transports[i]);
+      }
+    }
+
+    this.transports = Util.immutableList(transportsList);
   }
 }

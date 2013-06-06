@@ -17,11 +17,11 @@ package com.squareup.okhttp.internal.spdy;
 
 import com.google.mockwebserver.MockResponse;
 import com.google.mockwebserver.RecordedRequest;
+import com.squareup.okhttp.HttpResponseCache;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.internal.RecordingAuthenticator;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.internal.Util;
-import com.squareup.okhttp.internal.http.HttpResponseCache;
 import com.squareup.okhttp.internal.mockspdyserver.MockSpdyServer;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -78,7 +78,7 @@ public final class HttpOverSpdyTest {
   private HttpResponseCache cache;
 
   @Before public void setUp() throws Exception {
-    client.setSSLSocketFactory(sslContext.getSocketFactory());
+    client.setSslSocketFactory(sslContext.getSocketFactory());
     client.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
     String systemTmpDir = System.getProperty("java.io.tmpdir");
     File cacheDir = new File(systemTmpDir, "HttpCache-" + UUID.randomUUID());
