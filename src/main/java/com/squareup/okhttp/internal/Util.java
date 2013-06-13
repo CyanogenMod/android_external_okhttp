@@ -29,6 +29,10 @@ import java.net.URI;
 import java.net.URL;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Junk drawer of utility methods. */
@@ -149,12 +153,14 @@ public final class Util {
     throw new AssertionError(thrown);
   }
 
-  /** Recursively delete everything in {@code dir}. */
-  // TODO: this should specify paths as Strings rather than as Files
+  /**
+   * Deletes the contents of {@code dir}. Throws an IOException if any file
+   * could not be deleted, or if {@code dir} is not a readable directory.
+   */
   public static void deleteContents(File dir) throws IOException {
     File[] files = dir.listFiles();
     if (files == null) {
-      throw new IllegalArgumentException("not a directory: " + dir);
+      throw new IOException("not a readable directory: " + dir);
     }
     for (File file : files) {
       if (file.isDirectory()) {
@@ -321,5 +327,20 @@ public final class Util {
       result.setLength(length - 1);
     }
     return result.toString();
+  }
+
+  /** Returns an immutable copy of {@code list}. */
+  public static <T> List<T> immutableList(List<T> list) {
+    return Collections.unmodifiableList(new ArrayList<T>(list));
+  }
+
+  public static ThreadFactory daemonThreadFactory(final String name) {
+    return new ThreadFactory() {
+      @Override public Thread newThread(Runnable runnable) {
+        Thread result = new Thread(runnable, name);
+        result.setDaemon(true);
+        return result;
+      }
+    };
   }
 }

@@ -1,10 +1,25 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one or more
+ *  contributor license agreements.  See the NOTICE file distributed with
+ *  this work for additional information regarding copyright ownership.
+ *  The ASF licenses this file to You under the Apache License, Version 2.0
+ *  (the "License"); you may not use this file except in compliance with
+ *  the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
 package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.Platform;
 import com.squareup.okhttp.internal.Util;
 import java.net.SocketException;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.ListIterator;
@@ -65,8 +80,9 @@ public class ConnectionPool {
   private final LinkedList<Connection> connections = new LinkedList<Connection>();
 
   /** We use a single background thread to cleanup expired connections. */
-  private final ExecutorService executorService =
-      new ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
+  private final ExecutorService executorService = new ThreadPoolExecutor(0, 1,
+      60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(),
+      Util.daemonThreadFactory("OkHttp ConnectionPool"));
   private final Callable<Void> connectionsCleanupCallable = new Callable<Void>() {
     @Override public Void call() throws Exception {
       List<Connection> expiredConnections = new ArrayList<Connection>(MAX_CONNECTIONS_TO_CLEANUP);
@@ -162,9 +178,10 @@ public class ConnectionPool {
   /** Returns a recycled connection to {@code address}, or null if no such connection exists. */
   public synchronized Connection get(Address address) {
     Connection foundConnection = null;
-    for (Iterator<Connection> i = connections.descendingIterator(); i.hasNext(); ) {
-      Connection connection = i.next();
-      if (!connection.getAddress().equals(address)
+    for (ListIterator<Connection> i = connections.listIterator(connections.size());
+        i.hasPrevious(); ) {
+      Connection connection = i.previous();
+      if (!connection.getRoute().getAddress().equals(address)
           || !connection.isAlive()
           || System.nanoTime() - connection.getIdleStartTimeNs() >= keepAliveDurationNs) {
         continue;
@@ -239,6 +256,19 @@ public class ConnectionPool {
       synchronized (this) {
         connections.addFirst(connection);
       }
+    }
+  }
+
+  /** Close and remove all connections in the pool. */
+  public void evictAll() {
+    List<Connection> connections;
+    synchronized (this) {
+      connections = new ArrayList<Connection>(this.connections);
+      this.connections.clear();
+    }
+
+    for (Connection connection : connections) {
+      Util.closeQuietly(connection);
     }
   }
 }
