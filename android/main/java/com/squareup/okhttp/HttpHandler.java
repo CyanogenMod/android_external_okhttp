@@ -23,19 +23,29 @@ import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
 
-public final class HttpHandler extends URLStreamHandler {
+public class HttpHandler extends URLStreamHandler {
     @Override protected URLConnection openConnection(URL url) throws IOException {
-        return new OkHttpClient().open(url);
+        return newOkHttpClient(null /* proxy */).open(url);
     }
 
     @Override protected URLConnection openConnection(URL url, Proxy proxy) throws IOException {
         if (url == null || proxy == null) {
             throw new IllegalArgumentException("url == null || proxy == null");
         }
-        return new OkHttpClient().setProxy(proxy).open(url);
+        return newOkHttpClient(proxy).open(url);
     }
 
     @Override protected int getDefaultPort() {
         return 80;
+    }
+
+    protected OkHttpClient newOkHttpClient(Proxy proxy) {
+        OkHttpClient client = new OkHttpClient();
+        client.setFollowProtocolRedirects(false);
+        if (proxy != null) {
+            client.setProxy(proxy);
+        }
+
+        return client;
     }
 }
