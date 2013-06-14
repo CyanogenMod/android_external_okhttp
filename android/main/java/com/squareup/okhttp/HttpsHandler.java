@@ -25,21 +25,18 @@ import java.net.URLStreamHandler;
 import java.util.Arrays;
 import java.util.List;
 
-public final class HttpsHandler extends URLStreamHandler {
+public final class HttpsHandler extends HttpHandler {
     private static final List<String> ENABLED_TRANSPORTS = Arrays.asList("http/1.1");
-
-    @Override protected URLConnection openConnection(URL url) throws IOException {
-        return new OkHttpClient().open(url);
-    }
-
-    @Override protected URLConnection openConnection(URL url, Proxy proxy) throws IOException {
-        if (url == null || proxy == null) {
-            throw new IllegalArgumentException("url == null || proxy == null");
-        }
-        return new OkHttpClient().setProxy(proxy).setTransports(ENABLED_TRANSPORTS).open(url);
-    }
 
     @Override protected int getDefaultPort() {
         return 443;
+    }
+
+    @Override
+    protected OkHttpClient newOkHttpClient(Proxy proxy) {
+        OkHttpClient client = super.newOkHttpClient(proxy);
+        client.setTransports(ENABLED_TRANSPORTS);
+
+        return client;
     }
 }
