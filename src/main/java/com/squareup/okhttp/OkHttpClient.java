@@ -28,6 +28,9 @@ import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.ResponseCache;
 import java.net.URL;
+import java.net.URLConnection;
+import java.net.URLStreamHandler;
+import java.net.URLStreamHandlerFactory;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -38,7 +41,7 @@ import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLSocketFactory;
 
 /** Configures and creates HTTP connections. */
-public final class OkHttpClient {
+public final class OkHttpClient implements URLStreamHandlerFactory {
   private static final List<String> DEFAULT_TRANSPORTS
       = Util.immutableList(Arrays.asList("spdy/3", "http/1.1"));
 
@@ -269,6 +272,19 @@ public final class OkHttpClient {
     }
   }
 
+  HttpURLConnection open(URL url, Proxy proxy) {
+    String protocol = url.getProtocol();
+    OkHttpClient copy = copyWithDefaults();
+    copy.proxy = proxy;
+    if (protocol.equals("http")) {
+      return new HttpURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
+    } else if (protocol.equals("https")) {
+      return new HttpsURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
+    } else {
+      throw new IllegalArgumentException("Unexpected protocol: " + protocol);
+    }
+  }
+
   /**
    * Returns a shallow copy of this OkHttpClient that uses the system-wide default for
    * each field that hasn't been explicitly configured.
@@ -284,7 +300,7 @@ public final class OkHttpClient {
         : HttpsURLConnection.getDefaultSSLSocketFactory();
     result.hostnameVerifier = hostnameVerifier != null
         ? hostnameVerifier
-        : new OkHostnameVerifier();
+        : OkHostnameVerifier.INSTANCE;
     result.authenticator = authenticator != null
         ? authenticator
         : HttpAuthenticator.SYSTEM_DEFAULT;
@@ -292,5 +308,35 @@ public final class OkHttpClient {
     result.followProtocolRedirects = followProtocolRedirects;
     result.transports = transports != null ? transports : DEFAULT_TRANSPORTS;
     return result;
+  }
+
+  /**
+   * Creates a URLStreamHandler as a {@link URL#setURLStreamHandlerFactory}.
+   *
+   * <p>This code configures OkHttp to handle all HTTP and HTTPS connections
+   * created with {@link URL#openConnection()}: <pre>   {@code
+   *
+   *   OkHttpClient okHttpClient = new OkHttpClient();
+   *   URL.setURLStreamHandlerFactory(okHttpClient);
+   * }</pre>
+   */
+  public URLStreamHandler createURLStreamHandler(final String protocol) {
+    if (!protocol.equals("http") && !protocol.equals("https")) return null;
+
+    return new URLStreamHandler() {
+      @Override protected URLConnection openConnection(URL url) {
+        return open(url);
+      }
+
+      @Override protected URLConnection openConnection(URL url, Proxy proxy) {
+        return open(url, proxy);
+      }
+
+      @Override protected int getDefaultPort() {
+        if (protocol.equals("http")) return 80;
+        if (protocol.equals("https")) return 443;
+        throw new AssertionError();
+      }
+    };
   }
 }
