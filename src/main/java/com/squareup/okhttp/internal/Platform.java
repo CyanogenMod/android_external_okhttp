@@ -25,6 +25,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
@@ -55,6 +56,11 @@ public class Platform {
 
   public static Platform get() {
     return PLATFORM;
+  }
+
+  /** Prefix used on custom headers. */
+  public String getPrefix() {
+    return "OkHttp";
   }
 
   public void logW(String warning) {
@@ -97,6 +103,11 @@ public class Platform {
    * protocols are only sent if the socket implementation supports NPN.
    */
   public void setNpnProtocols(SSLSocket socket, byte[] npnProtocols) {
+  }
+
+  public void connectSocket(Socket socket, InetSocketAddress address,
+      int connectTimeout) throws IOException {
+    socket.connect(address, connectTimeout);
   }
 
   /**
@@ -212,6 +223,9 @@ public class Platform {
           return super.getMtu(socket); // There's no longer an interface with this local address.
         }
         return (Integer) getMtu.invoke(networkInterface);
+      } catch (NullPointerException e) {
+        // Certain Alcatel devices throw on getByInetAddress. Return default.
+        return super.getMtu(socket);
       } catch (SocketException e) {
         // Certain Motorola devices always throw on getByInetAddress. Return the default for those.
         return super.getMtu(socket);
@@ -236,6 +250,19 @@ public class Platform {
       this.openSslSocketClass = openSslSocketClass;
       this.setUseSessionTickets = setUseSessionTickets;
       this.setHostname = setHostname;
+    }
+
+    @Override public void connectSocket(Socket socket, InetSocketAddress address,
+        int connectTimeout) throws IOException {
+      try {
+        socket.connect(address, connectTimeout);
+      } catch (SecurityException se) {
+        // Before android 4.3, socket.connect could throw a SecurityException
+        // if opening a socket resulted in an EACCES error.
+        IOException ioException = new IOException("Exception in connect");
+        ioException.initCause(se);
+        throw ioException;
+      }
     }
 
     @Override public void enableTlsExtensions(SSLSocket socket, String uriHost) {

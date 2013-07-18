@@ -2090,22 +2090,18 @@ public final class URLConnectionTest {
   @Test public void responseCacheReturnsNullOutputStream() throws Exception {
     final AtomicBoolean aborted = new AtomicBoolean();
     client.setResponseCache(new ResponseCache() {
-      @Override
-      public CacheResponse get(URI uri, String requestMethod,
+      @Override public CacheResponse get(URI uri, String requestMethod,
           Map<String, List<String>> requestHeaders) throws IOException {
         return null;
       }
 
-      @Override
-      public CacheRequest put(URI uri, URLConnection connection) throws IOException {
+      @Override public CacheRequest put(URI uri, URLConnection connection) throws IOException {
         return new CacheRequest() {
-          @Override
-          public void abort() {
+          @Override public void abort() {
             aborted.set(true);
           }
 
-          @Override
-          public OutputStream getBody() throws IOException {
+          @Override public OutputStream getBody() throws IOException {
             return null;
           }
         };
@@ -2489,6 +2485,28 @@ public final class URLConnectionTest {
       fail();
     } catch (IllegalArgumentException expected) {
     }
+  }
+
+  @Test public void veryLargeFixedLengthRequest() throws Exception {
+    server.setBodyLimit(0);
+    server.enqueue(new MockResponse());
+    server.play();
+
+    HttpURLConnection connection = client.open(server.getUrl("/"));
+    connection.setDoOutput(true);
+    long contentLength = Integer.MAX_VALUE + 1L;
+    connection.setFixedLengthStreamingMode(contentLength);
+    OutputStream out = connection.getOutputStream();
+    byte[] buffer = new byte[1024 * 1024];
+    for (long bytesWritten = 0; bytesWritten < contentLength; ) {
+      int byteCount = (int) Math.min(buffer.length, contentLength - bytesWritten);
+      out.write(buffer, 0, byteCount);
+      bytesWritten += byteCount;
+    }
+    assertContent("", connection);
+
+    RecordedRequest request = server.takeRequest();
+    assertEquals(Long.toString(contentLength), request.getHeader("Content-Length"));
   }
 
   /** Returns a gzipped copy of {@code bytes}. */

@@ -16,10 +16,10 @@
 package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.internal.http.Dispatcher;
 import com.squareup.okhttp.internal.http.HttpAuthenticator;
 import com.squareup.okhttp.internal.http.HttpURLConnectionImpl;
 import com.squareup.okhttp.internal.http.HttpsURLConnectionImpl;
-import com.squareup.okhttp.internal.http.OkResponseCache;
 import com.squareup.okhttp.internal.http.OkResponseCacheAdapter;
 import com.squareup.okhttp.internal.tls.OkHostnameVerifier;
 import java.net.CookieHandler;
@@ -32,10 +32,8 @@ import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.net.URLStreamHandlerFactory;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLSocketFactory;
@@ -45,9 +43,10 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
   private static final List<String> DEFAULT_TRANSPORTS
       = Util.immutableList(Arrays.asList("spdy/3", "http/1.1"));
 
+  private final RouteDatabase routeDatabase;
+  private final Dispatcher dispatcher;
   private Proxy proxy;
   private List<String> transports;
-  private final Set<Route> failedRoutes;
   private ProxySelector proxySelector;
   private CookieHandler cookieHandler;
   private ResponseCache responseCache;
@@ -56,13 +55,65 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
   private OkAuthenticator authenticator;
   private ConnectionPool connectionPool;
   private boolean followProtocolRedirects = true;
+  private int connectTimeout;
+  private int readTimeout;
 
   public OkHttpClient() {
-    this.failedRoutes = Collections.synchronizedSet(new LinkedHashSet<Route>());
+    routeDatabase = new RouteDatabase();
+    dispatcher = new Dispatcher();
   }
 
   private OkHttpClient(OkHttpClient copyFrom) {
-    this.failedRoutes = copyFrom.failedRoutes; // Avoid allocating an unnecessary LinkedHashSet.
+    routeDatabase = copyFrom.routeDatabase;
+    dispatcher = copyFrom.dispatcher;
+  }
+
+  /**
+   * Sets the default connect timeout for new connections. A value of 0 means no timeout.
+   *
+   * @see URLConnection#setConnectTimeout(int)
+   */
+  public void setConnectTimeout(long timeout, TimeUnit unit) {
+    if (timeout < 0) {
+      throw new IllegalArgumentException("timeout < 0");
+    }
+    if (unit == null) {
+      throw new IllegalArgumentException("unit == null");
+    }
+    long millis = unit.toMillis(timeout);
+    if (millis > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException("Timeout too large.");
+    }
+    connectTimeout = (int) millis;
+  }
+
+  /** Default connect timeout (in milliseconds). */
+  public int getConnectTimeout() {
+    return connectTimeout;
+  }
+
+  /**
+   * Sets the default read timeout for new connections. A value of 0 means no timeout.
+   *
+   * @see URLConnection#setReadTimeout(int)
+   */
+  public void setReadTimeout(long timeout, TimeUnit unit) {
+    if (timeout < 0) {
+      throw new IllegalArgumentException("timeout < 0");
+    }
+    if (unit == null) {
+      throw new IllegalArgumentException("unit == null");
+    }
+    long millis = unit.toMillis(timeout);
+    if (millis > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException("Timeout too large.");
+    }
+    readTimeout = (int) millis;
+  }
+
+  /** Default read timeout (in milliseconds). */
+  public int getReadTimeout() {
+    return readTimeout;
   }
 
   /**
@@ -129,7 +180,7 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
     return responseCache;
   }
 
-  private OkResponseCache okResponseCache() {
+  public OkResponseCache getOkResponseCache() {
     if (responseCache instanceof HttpResponseCache) {
       return ((HttpResponseCache) responseCache).okResponseCache;
     } else if (responseCache != null) {
@@ -217,6 +268,10 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
     return followProtocolRedirects;
   }
 
+  public RouteDatabase getRoutesDatabase() {
+    return routeDatabase;
+  }
+
   /**
    * Configure the transports used by this client to communicate with remote
    * servers. By default this client will prefer the most efficient transport
@@ -252,6 +307,9 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
     if (transports.contains(null)) {
       throw new IllegalArgumentException("transports must not contain null");
     }
+    if (transports.contains("")) {
+      throw new IllegalArgumentException("transports contains an empty string");
+    }
     this.transports = transports;
     return this;
   }
@@ -260,29 +318,36 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
     return transports;
   }
 
+  /**
+   * Schedules {@code request} to be executed.
+   */
+  public void enqueue(Request request, Response.Receiver responseReceiver) {
+    // Create the HttpURLConnection immediately so the enqueued job gets the current settings of
+    // this client. Otherwise changes to this client (socket factory, redirect policy, etc.) may
+    // incorrectly be reflected in the request when it is dispatched later.
+    dispatcher.enqueue(open(request.url()), request, responseReceiver);
+  }
+
+  /**
+   * Cancels all scheduled tasks tagged with {@code tag}. Requests that are already
+   * in flight might not be canceled.
+   */
+  public void cancel(Object tag) {
+    dispatcher.cancel(tag);
+  }
+
   public HttpURLConnection open(URL url) {
-    String protocol = url.getProtocol();
-    OkHttpClient copy = copyWithDefaults();
-    if (protocol.equals("http")) {
-      return new HttpURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
-    } else if (protocol.equals("https")) {
-      return new HttpsURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
-    } else {
-      throw new IllegalArgumentException("Unexpected protocol: " + protocol);
-    }
+    return open(url, proxy);
   }
 
   HttpURLConnection open(URL url, Proxy proxy) {
     String protocol = url.getProtocol();
     OkHttpClient copy = copyWithDefaults();
     copy.proxy = proxy;
-    if (protocol.equals("http")) {
-      return new HttpURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
-    } else if (protocol.equals("https")) {
-      return new HttpsURLConnectionImpl(url, copy, copy.okResponseCache(), copy.failedRoutes);
-    } else {
-      throw new IllegalArgumentException("Unexpected protocol: " + protocol);
-    }
+
+    if (protocol.equals("http")) return new HttpURLConnectionImpl(url, copy);
+    if (protocol.equals("https")) return new HttpsURLConnectionImpl(url, copy);
+    throw new IllegalArgumentException("Unexpected protocol: " + protocol);
   }
 
   /**
@@ -307,6 +372,8 @@ public final class OkHttpClient implements URLStreamHandlerFactory {
     result.connectionPool = connectionPool != null ? connectionPool : ConnectionPool.getDefault();
     result.followProtocolRedirects = followProtocolRedirects;
     result.transports = transports != null ? transports : DEFAULT_TRANSPORTS;
+    result.connectTimeout = connectTimeout;
+    result.readTimeout = readTimeout;
     return result;
   }
 

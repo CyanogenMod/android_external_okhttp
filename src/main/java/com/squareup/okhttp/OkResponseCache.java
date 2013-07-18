@@ -13,9 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.squareup.okhttp.internal.http;
+package com.squareup.okhttp;
 
-import com.squareup.okhttp.ResponseSource;
 import java.io.IOException;
 import java.net.CacheRequest;
 import java.net.CacheResponse;
@@ -29,15 +28,17 @@ import java.util.Map;
  * An extended response cache API. Unlike {@link java.net.ResponseCache}, this
  * interface supports conditional caching and statistics.
  *
- * <p>Along with the rest of the {@code internal} package, this is not a public
- * API. Applications wishing to supply their own caches must use the more
- * limited {@link java.net.ResponseCache} interface.
+ * <h3>Warning: Experimental OkHttp 2.0 API</h3>
+ * This class is in beta. APIs are subject to change!
  */
 public interface OkResponseCache {
   CacheResponse get(URI uri, String requestMethod, Map<String, List<String>> requestHeaders)
       throws IOException;
 
   CacheRequest put(URI uri, URLConnection urlConnection) throws IOException;
+
+  /** Remove any cache entries for the supplied {@code uri} if the request method invalidates. */
+  void maybeRemove(String requestMethod, URI uri) throws IOException;
 
   /**
    * Handles a conditional request hit by updating the stored cache response
