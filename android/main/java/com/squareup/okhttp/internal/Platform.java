@@ -17,7 +17,9 @@
 package com.squareup.okhttp.internal;
 
 import dalvik.system.SocketTagger;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
@@ -122,5 +124,15 @@ public final class Platform {
         } catch (SocketException exception) {
             return DEFAULT_MTU;
         }
+    }
+
+    public void connectSocket(Socket socket, InetSocketAddress address,
+              int connectTimeout) throws IOException {
+        socket.connect(address, connectTimeout);
+    }
+
+    /** Prefix used on custom headers. */
+    public String getPrefix() {
+        return "X-Android";
     }
 }

@@ -22,8 +22,8 @@ import com.squareup.okhttp.internal.StrictLineReader;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.HttpURLConnectionImpl;
+import com.squareup.okhttp.internal.http.HttpsEngine;
 import com.squareup.okhttp.internal.http.HttpsURLConnectionImpl;
-import com.squareup.okhttp.internal.http.OkResponseCache;
 import com.squareup.okhttp.internal.http.RawHeaders;
 import com.squareup.okhttp.internal.http.ResponseHeaders;
 import java.io.BufferedWriter;
@@ -153,6 +153,10 @@ public final class HttpResponseCache extends ResponseCache {
       return HttpResponseCache.this.put(uri, connection);
     }
 
+    @Override public void maybeRemove(String requestMethod, URI uri) throws IOException {
+      HttpResponseCache.this.maybeRemove(requestMethod, uri);
+    }
+
     @Override public void update(
         CacheResponse conditionalCacheHit, HttpURLConnection connection) throws IOException {
       HttpResponseCache.this.update(conditionalCacheHit, connection);
@@ -226,17 +230,11 @@ public final class HttpResponseCache extends ResponseCache {
 
     HttpURLConnection httpConnection = (HttpURLConnection) urlConnection;
     String requestMethod = httpConnection.getRequestMethod();
-    String key = uriToKey(uri);
 
-    if (requestMethod.equals("POST") || requestMethod.equals("PUT") || requestMethod.equals(
-        "DELETE")) {
-      try {
-        cache.remove(key);
-      } catch (IOException ignored) {
-        // The cache cannot be written.
-      }
+    if (maybeRemove(requestMethod, uri)) {
       return null;
-    } else if (!requestMethod.equals("GET")) {
+    }
+    if (!requestMethod.equals("GET")) {
       // Don't cache non-GET responses. We're technically allowed to cache
       // HEAD requests and some POST requests, but the complexity of doing
       // so is high and the benefit is low.
@@ -259,7 +257,7 @@ public final class HttpResponseCache extends ResponseCache {
     Entry entry = new Entry(uri, varyHeaders, httpConnection);
     DiskLruCache.Editor editor = null;
     try {
-      editor = cache.edit(key);
+      editor = cache.edit(uriToKey(uri));
       if (editor == null) {
         return null;
       }
@@ -269,6 +267,23 @@ public final class HttpResponseCache extends ResponseCache {
       abortQuietly(editor);
       return null;
     }
+  }
+
+  /**
+   * Returns true if the supplied {@code requestMethod} potentially invalidates an entry in the
+   * cache.
+   */
+  private boolean maybeRemove(String requestMethod, URI uri) {
+    if (requestMethod.equals("POST") || requestMethod.equals("PUT") || requestMethod.equals(
+        "DELETE")) {
+      try {
+        cache.remove(uriToKey(uri));
+      } catch (IOException ignored) {
+        // The cache cannot be written.
+      }
+      return true;
+    }
+    return false;
   }
 
   private void update(CacheResponse conditionalCacheHit, HttpURLConnection httpConnection)
@@ -407,8 +422,7 @@ public final class HttpResponseCache extends ResponseCache {
           editor.commit();
         }
 
-        @Override
-        public void write(byte[] buffer, int offset, int length) throws IOException {
+        @Override public void write(byte[] buffer, int offset, int length) throws IOException {
           // Since we don't override "write(int oneByte)", we can write directly to "out"
           // and avoid the inefficient implementation from the FilterOutputStream.
           out.write(buffer, offset, length);
@@ -565,8 +579,8 @@ public final class HttpResponseCache extends ResponseCache {
       HttpEngine engine = httpConnection instanceof HttpsURLConnectionImpl
           ? ((HttpsURLConnectionImpl) httpConnection).getHttpEngine()
           : ((HttpURLConnectionImpl) httpConnection).getHttpEngine();
-      return engine instanceof HttpsURLConnectionImpl.HttpsEngine
-          ? ((HttpsURLConnectionImpl.HttpsEngine) engine).getSslSocket()
+      return engine instanceof HttpsEngine
+          ? ((HttpsEngine) engine).getSslSocket()
           : null;
     }
 

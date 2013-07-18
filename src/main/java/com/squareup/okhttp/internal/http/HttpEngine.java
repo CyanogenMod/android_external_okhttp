@@ -19,6 +19,8 @@ package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkResponseCache;
 import com.squareup.okhttp.ResponseSource;
 import com.squareup.okhttp.TunnelRequest;
 import com.squareup.okhttp.internal.Dns;
@@ -31,6 +33,7 @@ import java.io.OutputStream;
 import java.net.CacheRequest;
 import java.net.CacheResponse;
 import java.net.CookieHandler;
+import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -85,7 +88,8 @@ public class HttpEngine {
   };
   public static final int HTTP_CONTINUE = 100;
 
-  protected final HttpURLConnectionImpl policy;
+  protected final Policy policy;
+  protected final OkHttpClient client;
 
   protected final String method;
 
@@ -137,14 +141,15 @@ public class HttpEngine {
 
   /**
    * @param requestHeaders the client's supplied request headers. This class
-   * creates a private copy that it can mutate.
+   *     creates a private copy that it can mutate.
    * @param connection the connection used for an intermediate response
-   * immediately prior to this request/response pair, such as a same-host
-   * redirect. This engine assumes ownership of the connection and must
-   * release it when it is unneeded.
+   *     immediately prior to this request/response pair, such as a same-host
+   *     redirect. This engine assumes ownership of the connection and must
+   *     release it when it is unneeded.
    */
-  public HttpEngine(HttpURLConnectionImpl policy, String method, RawHeaders requestHeaders,
+  public HttpEngine(OkHttpClient client, Policy policy, String method, RawHeaders requestHeaders,
       Connection connection, RetryableOutputStream requestBodyOut) throws IOException {
+    this.client = client;
     this.policy = policy;
     this.method = method;
     this.connection = connection;
@@ -175,8 +180,9 @@ public class HttpEngine {
 
     prepareRawRequestHeaders();
     initResponseSource();
-    if (policy.responseCache != null) {
-      policy.responseCache.trackResponse(responseSource);
+    OkResponseCache responseCache = client.getOkResponseCache();
+    if (responseCache != null) {
+      responseCache.trackResponse(responseSource);
     }
 
     // The raw response source may require the network, but the request
@@ -196,7 +202,7 @@ public class HttpEngine {
     if (responseSource.requiresConnection()) {
       sendSocketRequest();
     } else if (connection != null) {
-      policy.connectionPool.recycle(connection);
+      client.getConnectionPool().recycle(connection);
       connection = null;
     }
   }
@@ -207,15 +213,14 @@ public class HttpEngine {
    */
   private void initResponseSource() throws IOException {
     responseSource = ResponseSource.NETWORK;
-    if (!policy.getUseCaches() || policy.responseCache == null) {
-      return;
-    }
+    if (!policy.getUseCaches()) return;
 
-    CacheResponse candidate =
-        policy.responseCache.get(uri, method, requestHeaders.getHeaders().toMultimap(false));
-    if (candidate == null) {
-      return;
-    }
+    OkResponseCache responseCache = client.getOkResponseCache();
+    if (responseCache == null) return;
+
+    CacheResponse candidate = responseCache.get(
+        uri, method, requestHeaders.getHeaders().toMultimap(false));
+    if (candidate == null) return;
 
     Map<String, List<String>> responseHeadersMap = candidate.getHeaders();
     cachedResponseBody = candidate.getBody();
@@ -273,22 +278,22 @@ public class HttpEngine {
       SSLSocketFactory sslSocketFactory = null;
       HostnameVerifier hostnameVerifier = null;
       if (uri.getScheme().equalsIgnoreCase("https")) {
-        sslSocketFactory = policy.sslSocketFactory;
-        hostnameVerifier = policy.hostnameVerifier;
+        sslSocketFactory = client.getSslSocketFactory();
+        hostnameVerifier = client.getHostnameVerifier();
       }
       Address address = new Address(uriHost, getEffectivePort(uri), sslSocketFactory,
-          hostnameVerifier, policy.authenticator, policy.requestedProxy, policy.getTransports());
-      routeSelector = new RouteSelector(address, uri, policy.proxySelector, policy.connectionPool,
-          Dns.DEFAULT, policy.getFailedRoutes());
+          hostnameVerifier, client.getAuthenticator(), client.getProxy(), client.getTransports());
+      routeSelector = new RouteSelector(address, uri, client.getProxySelector(),
+          client.getConnectionPool(), Dns.DEFAULT, client.getRoutesDatabase());
     }
     connection = routeSelector.next();
     if (!connection.isConnected()) {
-      connection.connect(policy.getConnectTimeout(), policy.getReadTimeout(), getTunnelConfig());
-      policy.connectionPool.maybeShare(connection);
-      policy.getFailedRoutes().remove(connection.getRoute());
+      connection.connect(client.getConnectTimeout(), client.getReadTimeout(), getTunnelConfig());
+      client.getConnectionPool().maybeShare(connection);
+      client.getRoutesDatabase().connected(connection.getRoute());
     }
     connected(connection);
-    if (connection.getRoute().getProxy() != policy.requestedProxy) {
+    if (connection.getRoute().getProxy() != client.getProxy()) {
       // Update the request line if the proxy changed; it may need a host name.
       requestHeaders.getHeaders().setRequestLine(getRequestLine());
     }
@@ -386,17 +391,20 @@ public class HttpEngine {
 
   private void maybeCache() throws IOException {
     // Are we caching at all?
-    if (!policy.getUseCaches() || policy.responseCache == null) {
-      return;
-    }
+    if (!policy.getUseCaches()) return;
+    OkResponseCache responseCache = client.getOkResponseCache();
+    if (responseCache == null) return;
+
+    HttpURLConnection connectionToCache = policy.getHttpConnectionToCache();
 
     // Should we cache this response for this request?
     if (!responseHeaders.isCacheable(requestHeaders)) {
+      responseCache.maybeRemove(connectionToCache.getRequestMethod(), uri);
       return;
     }
 
     // Offer this request to the cache.
-    cacheRequest = policy.responseCache.put(uri, policy.getHttpConnectionToCache());
+    cacheRequest = responseCache.put(uri, connectionToCache);
   }
 
   /**
@@ -408,7 +416,7 @@ public class HttpEngine {
   public final void automaticallyReleaseConnectionToPool() {
     automaticallyReleaseConnectionToPool = true;
     if (connection != null && connectionReleased) {
-      policy.connectionPool.recycle(connection);
+      client.getConnectionPool().recycle(connection);
       connection = null;
     }
   }
@@ -432,7 +440,7 @@ public class HttpEngine {
         Util.closeQuietly(connection);
         connection = null;
       } else if (automaticallyReleaseConnectionToPool) {
-        policy.connectionPool.recycle(connection);
+        client.getConnectionPool().recycle(connection);
         connection = null;
       }
     }
@@ -520,7 +528,7 @@ public class HttpEngine {
       requestHeaders.setIfModifiedSince(new Date(ifModifiedSince));
     }
 
-    CookieHandler cookieHandler = policy.cookieHandler;
+    CookieHandler cookieHandler = client.getCookieHandler();
     if (cookieHandler != null) {
       requestHeaders.addCookies(
           cookieHandler.get(uri, requestHeaders.getHeaders().toMultimap(false)));
@@ -635,8 +643,9 @@ public class HttpEngine {
         release(false);
         ResponseHeaders combinedHeaders = cachedResponseHeaders.combine(responseHeaders);
         setResponse(combinedHeaders, cachedResponseBody);
-        policy.responseCache.trackConditionalCacheHit();
-        policy.responseCache.update(cacheResponse, policy.getHttpConnectionToCache());
+        OkResponseCache responseCache = client.getOkResponseCache();
+        responseCache.trackConditionalCacheHit();
+        responseCache.update(cacheResponse, policy.getHttpConnectionToCache());
         return;
       } else {
         Util.closeQuietly(cachedResponseBody);
@@ -655,7 +664,7 @@ public class HttpEngine {
   }
 
   public void receiveHeaders(RawHeaders headers) throws IOException {
-    CookieHandler cookieHandler = policy.cookieHandler;
+    CookieHandler cookieHandler = client.getCookieHandler();
     if (cookieHandler != null) {
       cookieHandler.put(uri, headers.toMultimap(true));
     }
