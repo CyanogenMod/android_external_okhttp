@@ -110,6 +110,9 @@ public class HttpEngine {
   /** The time when the request headers were written, or -1 if they haven't been written yet. */
   long sentRequestMillis = -1;
 
+  /** Whether the connection has been established */
+  boolean connected;
+
   /**
    * True if this client added an "Accept-Encoding: gzip" header field and is
    * therefore responsible for also decompressing the transfer stream.
@@ -304,6 +307,7 @@ public class HttpEngine {
    * pool. Subclasses use this hook to get a reference to the TLS data.
    */
   protected void connected(Connection connection) {
+    connected = true;
   }
 
   /**
