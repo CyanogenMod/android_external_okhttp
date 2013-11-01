@@ -17,7 +17,10 @@
 package com.squareup.okhttp.internal;
 
 import dalvik.system.SocketTagger;
+import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.URI;
@@ -26,13 +29,19 @@ import java.net.URL;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import javax.net.ssl.SSLSocket;
-import org.apache.harmony.xnet.provider.jsse.OpenSSLSocketImpl;
+import com.android.org.conscrypt.OpenSSLSocketImpl;
 
 /**
  * Access to proprietary Android APIs. Doesn't use reflection.
  */
 public final class Platform {
     private static final Platform PLATFORM = new Platform();
+
+    /*
+     * Default for the maximum transmission unit, used only if
+     * there's an error retrieving it via NetworkInterface.
+     */
+    private static final int DEFAULT_MTU = 1400;
 
     public static Platform get() {
         return PLATFORM;
@@ -93,5 +102,37 @@ public final class Platform {
     public OutputStream newDeflaterOutputStream(
             OutputStream out, Deflater deflater, boolean syncFlush) {
         return new DeflaterOutputStream(out, deflater, syncFlush);
+    }
+
+    /**
+     * Returns the maximum transmission unit of the network interface used by
+     * {@code socket}, or a reasonable default if there's an error retrieving
+     * it from the socket.
+     *
+     * <p>The returned value should only be used as an optimization; such as to
+     * size buffers efficiently.
+     */
+    public int getMtu(Socket socket) {
+        try {
+            NetworkInterface networkInterface = NetworkInterface.getByInetAddress(
+                socket.getLocalAddress());
+            if (networkInterface != null) {
+                return networkInterface.getMTU();
+            }
+
+            return DEFAULT_MTU;
+        } catch (SocketException exception) {
+            return DEFAULT_MTU;
+        }
+    }
+
+    public void connectSocket(Socket socket, InetSocketAddress address,
+              int connectTimeout) throws IOException {
+        socket.connect(address, connectTimeout);
+    }
+
+    /** Prefix used on custom headers. */
+    public String getPrefix() {
+        return "X-Android";
     }
 }

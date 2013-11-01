@@ -55,7 +55,7 @@ public final class SpdyTransport implements Transport {
     boolean hasResponseBody = true;
     stream = spdyConnection.newStream(requestHeaders.toNameValueBlock(), hasRequestBody,
         hasResponseBody);
-    stream.setReadTimeout(httpEngine.policy.getReadTimeout());
+    stream.setReadTimeout(httpEngine.client.getReadTimeout());
   }
 
   @Override public void writeRequestBody(RetryableOutputStream requestBody) throws IOException {
@@ -69,9 +69,11 @@ public final class SpdyTransport implements Transport {
   @Override public ResponseHeaders readResponseHeaders() throws IOException {
     List<String> nameValueBlock = stream.getResponseHeaders();
     RawHeaders rawHeaders = RawHeaders.fromNameValueBlock(nameValueBlock);
-    rawHeaders.computeResponseStatusLineFromSpdyHeaders();
     httpEngine.receiveHeaders(rawHeaders);
-    return new ResponseHeaders(httpEngine.uri, rawHeaders);
+
+    ResponseHeaders headers = new ResponseHeaders(httpEngine.uri, rawHeaders);
+    headers.setTransport("spdy/3");
+    return headers;
   }
 
   @Override public InputStream getTransferStream(CacheRequest cacheRequest) throws IOException {

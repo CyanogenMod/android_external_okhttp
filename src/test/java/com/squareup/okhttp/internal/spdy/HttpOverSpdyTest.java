@@ -17,11 +17,11 @@ package com.squareup.okhttp.internal.spdy;
 
 import com.google.mockwebserver.MockResponse;
 import com.google.mockwebserver.RecordedRequest;
+import com.squareup.okhttp.HttpResponseCache;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.internal.RecordingAuthenticator;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.internal.Util;
-import com.squareup.okhttp.internal.http.HttpResponseCache;
 import com.squareup.okhttp.internal.mockspdyserver.MockSpdyServer;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -78,7 +78,7 @@ public final class HttpOverSpdyTest {
   private HttpResponseCache cache;
 
   @Before public void setUp() throws Exception {
-    client.setSSLSocketFactory(sslContext.getSocketFactory());
+    client.setSslSocketFactory(sslContext.getSocketFactory());
     client.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
     String systemTmpDir = System.getProperty("java.io.tmpdir");
     File cacheDir = new File(systemTmpDir, "HttpCache-" + UUID.randomUUID());
@@ -90,12 +90,14 @@ public final class HttpOverSpdyTest {
   }
 
   @Test public void get() throws Exception {
-    MockResponse response = new MockResponse().setBody("ABCDE");
+    MockResponse response = new MockResponse().setBody("ABCDE").setStatus("HTTP/1.1 200 Sweet");
     server.enqueue(response);
     server.play();
 
     HttpURLConnection connection = client.open(server.getUrl("/foo"));
     assertContent("ABCDE", connection, Integer.MAX_VALUE);
+    assertEquals(200, connection.getResponseCode());
+    assertEquals("Sweet", connection.getResponseMessage());
 
     RecordedRequest request = server.takeRequest();
     assertEquals("GET /foo HTTP/1.1", request.getRequestLine());
@@ -209,6 +211,23 @@ public final class HttpOverSpdyTest {
     assertEquals(3, cache.getRequestCount());
     assertEquals(1, cache.getNetworkCount());
     assertEquals(2, cache.getHitCount());
+  }
+
+  @Test public void conditionalCache() throws IOException {
+    client.setResponseCache(cache);
+
+    server.enqueue(new MockResponse().addHeader("ETag: v1").setBody("A"));
+    server.enqueue(new MockResponse().setResponseCode(HttpURLConnection.HTTP_NOT_MODIFIED));
+    server.play();
+
+    assertContent("A", client.open(server.getUrl("/")), Integer.MAX_VALUE);
+    assertEquals(1, cache.getRequestCount());
+    assertEquals(1, cache.getNetworkCount());
+    assertEquals(0, cache.getHitCount());
+    assertContent("A", client.open(server.getUrl("/")), Integer.MAX_VALUE);
+    assertEquals(2, cache.getRequestCount());
+    assertEquals(2, cache.getNetworkCount());
+    assertEquals(1, cache.getHitCount());
   }
 
   @Test public void acceptAndTransmitCookies() throws Exception {

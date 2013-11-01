@@ -17,6 +17,7 @@
 package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.ResponseSource;
+import com.squareup.okhttp.internal.Platform;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -31,13 +32,19 @@ import java.util.concurrent.TimeUnit;
 import static com.squareup.okhttp.internal.Util.equal;
 
 /** Parsed HTTP response headers. */
-final class ResponseHeaders {
+public final class ResponseHeaders {
 
   /** HTTP header name for the local time when the request was sent. */
-  private static final String SENT_MILLIS = "X-Android-Sent-Millis";
+  private static final String SENT_MILLIS = Platform.get().getPrefix() + "-Sent-Millis";
 
   /** HTTP header name for the local time when the response was received. */
-  private static final String RECEIVED_MILLIS = "X-Android-Received-Millis";
+  private static final String RECEIVED_MILLIS = Platform.get().getPrefix() + "-Received-Millis";
+
+  /** HTTP synthetic header with the response source. */
+  static final String RESPONSE_SOURCE = Platform.get().getPrefix() + "-Response-Source";
+
+  /** HTTP synthetic header with the selected transport (spdy/3, http/1.1, etc). */
+  static final String SELECTED_TRANSPORT = Platform.get().getPrefix() + "-Selected-Transport";
 
   private final URI uri;
   private final RawHeaders headers;
@@ -271,6 +278,14 @@ final class ResponseHeaders {
     headers.add(RECEIVED_MILLIS, Long.toString(receivedResponseMillis));
   }
 
+  public void setResponseSource(ResponseSource responseSource) {
+    headers.set(RESPONSE_SOURCE, responseSource.toString() + " " + headers.getResponseCode());
+  }
+
+  public void setTransport(String transport) {
+    headers.set(SELECTED_TRANSPORT, transport);
+  }
+
   /**
    * Returns the current age of the response, in milliseconds. The calculation
    * is specified by RFC 2616, 13.2.3 Age Calculations.
@@ -403,7 +418,8 @@ final class ResponseHeaders {
       if (ageMillis + minFreshMillis >= freshMillis) {
         headers.add("Warning", "110 HttpURLConnection \"Response is stale\"");
       }
-      if (ageMillis > TimeUnit.HOURS.toMillis(24) && isFreshnessLifetimeHeuristic()) {
+      long oneDayMillis = 24 * 60 * 60 * 1000L;
+      if (ageMillis > oneDayMillis && isFreshnessLifetimeHeuristic()) {
         headers.add("Warning", "113 HttpURLConnection \"Heuristic expiration\"");
       }
       return ResponseSource.CACHE;

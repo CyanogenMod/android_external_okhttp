@@ -24,13 +24,14 @@ import com.squareup.okhttp.internal.http.RawHeaders;
 import com.squareup.okhttp.internal.http.SpdyTransport;
 import com.squareup.okhttp.internal.spdy.SpdyConnection;
 import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.util.Arrays;
 import javax.net.ssl.SSLSocket;
@@ -76,10 +77,7 @@ public final class Connection implements Closeable {
       'h', 't', 't', 'p', '/', '1', '.', '1'
   };
 
-  private final Address address;
-  private final Proxy proxy;
-  private final InetSocketAddress inetSocketAddress;
-  private final boolean modernTls;
+  private final Route route;
 
   private Socket socket;
   private InputStream in;
@@ -89,15 +87,8 @@ public final class Connection implements Closeable {
   private int httpMinorVersion = 1; // Assume HTTP/1.1
   private long idleStartTimeNs;
 
-  public Connection(Address address, Proxy proxy, InetSocketAddress inetSocketAddress,
-      boolean modernTls) {
-    if (address == null) throw new NullPointerException("address == null");
-    if (proxy == null) throw new NullPointerException("proxy == null");
-    if (inetSocketAddress == null) throw new NullPointerException("inetSocketAddress == null");
-    this.address = address;
-    this.proxy = proxy;
-    this.inetSocketAddress = inetSocketAddress;
-    this.modernTls = modernTls;
+  public Connection(Route route) {
+    this.route = route;
   }
 
   public void connect(int connectTimeout, int readTimeout, TunnelRequest tunnelRequest)
@@ -106,21 +97,22 @@ public final class Connection implements Closeable {
       throw new IllegalStateException("already connected");
     }
     connected = true;
-    socket = (proxy.type() != Proxy.Type.HTTP) ? new Socket(proxy) : new Socket();
-    socket.connect(inetSocketAddress, connectTimeout);
+    socket = (route.proxy.type() != Proxy.Type.HTTP) ? new Socket(route.proxy) : new Socket();
+    Platform.get().connectSocket(socket, route.inetSocketAddress, connectTimeout);
     socket.setSoTimeout(readTimeout);
     in = socket.getInputStream();
     out = socket.getOutputStream();
 
-    if (address.sslSocketFactory != null) {
+    if (route.address.sslSocketFactory != null) {
       upgradeToTls(tunnelRequest);
     }
 
-    // Buffer the socket stream to permit efficient parsing of HTTP headers and chunk sizes.
-    if (!isSpdy()) {
-      int bufferSize = 128;
-      in = new BufferedInputStream(in, bufferSize);
-    }
+    // Use MTU-sized buffers to send fewer packets.
+    int mtu = Platform.get().getMtu(socket);
+    if (mtu < 1024) mtu = 1024;
+    if (mtu > 8192) mtu = 8192;
+    in = new BufferedInputStream(in, mtu);
+    out = new BufferedOutputStream(out, mtu);
   }
 
   /**
@@ -136,16 +128,17 @@ public final class Connection implements Closeable {
     }
 
     // Create the wrapper over connected socket.
-    socket = address.sslSocketFactory
-        .createSocket(socket, address.uriHost, address.uriPort, true /* autoClose */);
+    socket = route.address.sslSocketFactory
+        .createSocket(socket, route.address.uriHost, route.address.uriPort, true /* autoClose */);
     SSLSocket sslSocket = (SSLSocket) socket;
-    if (modernTls) {
-      platform.enableTlsExtensions(sslSocket, address.uriHost);
+    if (route.modernTls) {
+      platform.enableTlsExtensions(sslSocket, route.address.uriHost);
     } else {
       platform.supportTlsIntolerantServer(sslSocket);
     }
 
-    if (modernTls) {
+    boolean useNpn = route.modernTls && route.address.transports.contains("spdy/3");
+    if (useNpn) {
       platform.setNpnProtocols(sslSocket, NPN_PROTOCOLS);
     }
 
@@ -153,18 +146,19 @@ public final class Connection implements Closeable {
     sslSocket.startHandshake();
 
     // Verify that the socket's certificates are acceptable for the target host.
-    if (!address.hostnameVerifier.verify(address.uriHost, sslSocket.getSession())) {
-      throw new IOException("Hostname '" + address.uriHost + "' was not verified");
+    if (!route.address.hostnameVerifier.verify(route.address.uriHost, sslSocket.getSession())) {
+      throw new IOException("Hostname '" + route.address.uriHost + "' was not verified");
     }
 
     out = sslSocket.getOutputStream();
     in = sslSocket.getInputStream();
 
     byte[] selectedProtocol;
-    if (modernTls && (selectedProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
+    if (useNpn && (selectedProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
       if (Arrays.equals(selectedProtocol, SPDY3)) {
         sslSocket.setSoTimeout(0); // SPDY timeouts are set per-stream.
-        spdyConnection = new SpdyConnection.Builder(address.getUriHost(), true, in, out).build();
+        spdyConnection = new SpdyConnection.Builder(route.address.getUriHost(), true, in, out)
+            .build();
       } else if (!Arrays.equals(selectedProtocol, HTTP_11)) {
         throw new IOException(
             "Unexpected NPN transport " + new String(selectedProtocol, "ISO-8859-1"));
@@ -181,29 +175,9 @@ public final class Connection implements Closeable {
     socket.close();
   }
 
-  /**
-   * Returns the proxy that this connection is using.
-   *
-   * <strong>Warning:</strong> This may be different than the proxy returned
-   * by {@link #getAddress}! That is the proxy that the user asked to be
-   * connected to; this returns the proxy that they were actually connected
-   * to. The two may disagree when a proxy selector selects a different proxy
-   * for a connection.
-   */
-  public Proxy getProxy() {
-    return proxy;
-  }
-
-  public Address getAddress() {
-    return address;
-  }
-
-  public InetSocketAddress getSocketAddress() {
-    return inetSocketAddress;
-  }
-
-  public boolean isModernTls() {
-    return modernTls;
+  /** Returns the route used by this connection. */
+  public Route getRoute() {
+    return route;
   }
 
   /**
@@ -217,6 +191,39 @@ public final class Connection implements Closeable {
   /** Returns true if this connection is alive. */
   public boolean isAlive() {
     return !socket.isClosed() && !socket.isInputShutdown() && !socket.isOutputShutdown();
+  }
+
+  /**
+   * Returns true if we are confident that we can read data from this
+   * connection. This is more expensive and more accurate than {@link
+   * #isAlive()}; callers should check {@link #isAlive()} first.
+   */
+  public boolean isReadable() {
+    if (!(in instanceof BufferedInputStream)) {
+      return true; // Optimistic.
+    }
+    if (isSpdy()) {
+      return true; // Optimistic. We can't test SPDY because its streams are in use.
+    }
+    BufferedInputStream bufferedInputStream = (BufferedInputStream) in;
+    try {
+      int readTimeout = socket.getSoTimeout();
+      try {
+        socket.setSoTimeout(1);
+        bufferedInputStream.mark(1);
+        if (bufferedInputStream.read() == -1) {
+          return false; // Stream is exhausted; socket is closed.
+        }
+        bufferedInputStream.reset();
+        return true;
+      } finally {
+        socket.setSoTimeout(readTimeout);
+      }
+    } catch (SocketTimeoutException ignored) {
+      return true; // Read timed out; socket is good.
+    } catch (IOException e) {
+      return false; // Couldn't read; socket is closed.
+    }
   }
 
   public void resetIdleStartTime() {
@@ -284,7 +291,12 @@ public final class Connection implements Closeable {
    * we must avoid buffering bytes intended for the higher-level protocol.
    */
   public boolean requiresTunnel() {
-    return address.sslSocketFactory != null && proxy != null && proxy.type() == Proxy.Type.HTTP;
+    return route.address.sslSocketFactory != null && route.proxy.type() == Proxy.Type.HTTP;
+  }
+
+  public final void updateReadTimeout(int newTimeout) throws IOException {
+    if (!connected) throw new IllegalStateException("updateReadTimeout - not connected");
+    socket.setSoTimeout(newTimeout);
   }
 
   /**
@@ -304,9 +316,9 @@ public final class Connection implements Closeable {
         case HTTP_PROXY_AUTH:
           requestHeaders = new RawHeaders(requestHeaders);
           URL url = new URL("https", tunnelRequest.host, tunnelRequest.port, "/");
-          boolean credentialsFound =
-              HttpAuthenticator.processAuthHeader(HTTP_PROXY_AUTH, responseHeaders, requestHeaders,
-                  proxy, url);
+          boolean credentialsFound = HttpAuthenticator.processAuthHeader(
+              route.address.authenticator, HTTP_PROXY_AUTH, responseHeaders, requestHeaders,
+              route.proxy, url);
           if (credentialsFound) {
             continue;
           } else {

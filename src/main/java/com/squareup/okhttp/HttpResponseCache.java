@@ -14,14 +14,18 @@
  * limitations under the License.
  */
 
-package com.squareup.okhttp.internal.http;
+package com.squareup.okhttp;
 
-import com.squareup.okhttp.OkResponseCache;
-import com.squareup.okhttp.ResponseSource;
 import com.squareup.okhttp.internal.Base64;
 import com.squareup.okhttp.internal.DiskLruCache;
 import com.squareup.okhttp.internal.StrictLineReader;
 import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.internal.http.HttpEngine;
+import com.squareup.okhttp.internal.http.HttpURLConnectionImpl;
+import com.squareup.okhttp.internal.http.HttpsEngine;
+import com.squareup.okhttp.internal.http.HttpsURLConnectionImpl;
+import com.squareup.okhttp.internal.http.RawHeaders;
+import com.squareup.okhttp.internal.http.ResponseHeaders;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -51,18 +55,70 @@ import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLSocket;
 
 import static com.squareup.okhttp.internal.Util.US_ASCII;
 import static com.squareup.okhttp.internal.Util.UTF_8;
 
 /**
- * Cache responses in a directory on the file system. Most clients should use
- * {@code android.net.HttpResponseCache}, the stable, documented front end for
- * this.
+ * Caches HTTP and HTTPS responses to the filesystem so they may be reused,
+ * saving time and bandwidth.
+ *
+ * <h3>Cache Optimization</h3>
+ * To measure cache effectiveness, this class tracks three statistics:
+ * <ul>
+ *     <li><strong>{@link #getRequestCount() Request Count:}</strong> the number
+ *         of HTTP requests issued since this cache was created.
+ *     <li><strong>{@link #getNetworkCount() Network Count:}</strong> the
+ *         number of those requests that required network use.
+ *     <li><strong>{@link #getHitCount() Hit Count:}</strong> the number of
+ *         those requests whose responses were served by the cache.
+ * </ul>
+ * Sometimes a request will result in a conditional cache hit. If the cache
+ * contains a stale copy of the response, the client will issue a conditional
+ * {@code GET}. The server will then send either the updated response if it has
+ * changed, or a short 'not modified' response if the client's copy is still
+ * valid. Such responses increment both the network count and hit count.
+ *
+ * <p>The best way to improve the cache hit rate is by configuring the web
+ * server to return cacheable responses. Although this client honors all <a
+ * href="http://www.ietf.org/rfc/rfc2616.txt">HTTP/1.1 (RFC 2068)</a> cache
+ * headers, it doesn't cache partial responses.
+ *
+ * <h3>Force a Network Response</h3>
+ * In some situations, such as after a user clicks a 'refresh' button, it may be
+ * necessary to skip the cache, and fetch data directly from the server. To force
+ * a full refresh, add the {@code no-cache} directive: <pre>   {@code
+ *         connection.addRequestProperty("Cache-Control", "no-cache");
+ * }</pre>
+ * If it is only necessary to force a cached response to be validated by the
+ * server, use the more efficient {@code max-age=0} instead: <pre>   {@code
+ *         connection.addRequestProperty("Cache-Control", "max-age=0");
+ * }</pre>
+ *
+ * <h3>Force a Cache Response</h3>
+ * Sometimes you'll want to show resources if they are available immediately,
+ * but not otherwise. This can be used so your application can show
+ * <i>something</i> while waiting for the latest data to be downloaded. To
+ * restrict a request to locally-cached resources, add the {@code
+ * only-if-cached} directive: <pre>   {@code
+ *     try {
+ *         connection.addRequestProperty("Cache-Control", "only-if-cached");
+ *         InputStream cached = connection.getInputStream();
+ *         // the resource was cached! show it
+ *     } catch (FileNotFoundException e) {
+ *         // the resource was not cached
+ *     }
+ * }</pre>
+ * This technique works even better in situations where a stale response is
+ * better than no response. To permit stale cached responses, use the {@code
+ * max-stale} directive with the maximum staleness in seconds: <pre>   {@code
+ *         int maxStale = 60 * 60 * 24 * 28; // tolerate 4-weeks stale
+ *         connection.addRequestProperty("Cache-Control", "max-stale=" + maxStale);
+ * }</pre>
  */
-public final class HttpResponseCache extends ResponseCache implements OkResponseCache {
+public final class HttpResponseCache extends ResponseCache {
   private static final char[] DIGITS =
       { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
@@ -80,6 +136,40 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
   private int networkCount;
   private int hitCount;
   private int requestCount;
+
+  /**
+   * Although this class only exposes the limited ResponseCache API, it
+   * implements the full OkResponseCache interface. This field is used as a
+   * package private handle to the complete implementation. It delegates to
+   * public and private members of this type.
+   */
+  final OkResponseCache okResponseCache = new OkResponseCache() {
+    @Override public CacheResponse get(URI uri, String requestMethod,
+        Map<String, List<String>> requestHeaders) throws IOException {
+      return HttpResponseCache.this.get(uri, requestMethod, requestHeaders);
+    }
+
+    @Override public CacheRequest put(URI uri, URLConnection connection) throws IOException {
+      return HttpResponseCache.this.put(uri, connection);
+    }
+
+    @Override public void maybeRemove(String requestMethod, URI uri) throws IOException {
+      HttpResponseCache.this.maybeRemove(requestMethod, uri);
+    }
+
+    @Override public void update(
+        CacheResponse conditionalCacheHit, HttpURLConnection connection) throws IOException {
+      HttpResponseCache.this.update(conditionalCacheHit, connection);
+    }
+
+    @Override public void trackConditionalCacheHit() {
+      HttpResponseCache.this.trackConditionalCacheHit();
+    }
+
+    @Override public void trackResponse(ResponseSource source) {
+      HttpResponseCache.this.trackResponse(source);
+    }
+  };
 
   public HttpResponseCache(File directory, long maxSize) throws IOException {
     cache = DiskLruCache.open(directory, VERSION, ENTRY_COUNT, maxSize);
@@ -140,17 +230,11 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
 
     HttpURLConnection httpConnection = (HttpURLConnection) urlConnection;
     String requestMethod = httpConnection.getRequestMethod();
-    String key = uriToKey(uri);
 
-    if (requestMethod.equals("POST") || requestMethod.equals("PUT") || requestMethod.equals(
-        "DELETE")) {
-      try {
-        cache.remove(key);
-      } catch (IOException ignored) {
-        // The cache cannot be written.
-      }
+    if (maybeRemove(requestMethod, uri)) {
       return null;
-    } else if (!requestMethod.equals("GET")) {
+    }
+    if (!requestMethod.equals("GET")) {
       // Don't cache non-GET responses. We're technically allowed to cache
       // HEAD requests and some POST requests, but the complexity of doing
       // so is high and the benefit is low.
@@ -173,7 +257,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     Entry entry = new Entry(uri, varyHeaders, httpConnection);
     DiskLruCache.Editor editor = null;
     try {
-      editor = cache.edit(key);
+      editor = cache.edit(uriToKey(uri));
       if (editor == null) {
         return null;
       }
@@ -186,12 +270,23 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
   }
 
   /**
-   * Handles a conditional request hit by updating the stored cache response
-   * with the headers from {@code httpConnection}. The cached response body is
-   * not updated. If the stored response has changed since {@code
-   * conditionalCacheHit} was returned, this does nothing.
+   * Returns true if the supplied {@code requestMethod} potentially invalidates an entry in the
+   * cache.
    */
-  @Override public void update(CacheResponse conditionalCacheHit, HttpURLConnection httpConnection)
+  private boolean maybeRemove(String requestMethod, URI uri) {
+    if (requestMethod.equals("POST") || requestMethod.equals("PUT") || requestMethod.equals(
+        "DELETE")) {
+      try {
+        cache.remove(uriToKey(uri));
+      } catch (IOException ignored) {
+        // The cache cannot be written.
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private void update(CacheResponse conditionalCacheHit, HttpURLConnection httpConnection)
       throws IOException {
     HttpEngine httpEngine = getHttpEngine(httpConnection);
     URI uri = httpEngine.getUri();
@@ -234,8 +329,13 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     }
   }
 
-  public DiskLruCache getCache() {
-    return cache;
+  /**
+   * Closes the cache and deletes all of its stored values. This will delete
+   * all files in the cache directory including files that weren't created by
+   * the cache.
+   */
+  public void delete() throws IOException {
+    cache.delete();
   }
 
   public synchronized int getWriteAbortCount() {
@@ -246,7 +346,31 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     return writeSuccessCount;
   }
 
-  public synchronized void trackResponse(ResponseSource source) {
+  public long getSize() {
+    return cache.size();
+  }
+
+  public long getMaxSize() {
+    return cache.getMaxSize();
+  }
+
+  public void flush() throws IOException {
+    cache.flush();
+  }
+
+  public void close() throws IOException {
+    cache.close();
+  }
+
+  public File getDirectory() {
+    return cache.getDirectory();
+  }
+
+  public boolean isClosed() {
+    return cache.isClosed();
+  }
+
+  private synchronized void trackResponse(ResponseSource source) {
     requestCount++;
 
     switch (source) {
@@ -260,7 +384,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     }
   }
 
-  public synchronized void trackConditionalCacheHit() {
+  private synchronized void trackConditionalCacheHit() {
     hitCount++;
   }
 
@@ -298,8 +422,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
           editor.commit();
         }
 
-        @Override
-        public void write(byte[] buffer, int offset, int length) throws IOException {
+        @Override public void write(byte[] buffer, int offset, int length) throws IOException {
           // Since we don't override "write(int oneByte)", we can write directly to "out"
           // and avoid the inefficient implementation from the FilterOutputStream.
           out.write(buffer, offset, length);
@@ -405,7 +528,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
 
         if (isHttps()) {
           String blank = reader.readLine();
-          if (!blank.isEmpty()) {
+          if (blank.length() > 0) {
             throw new IOException("expected \"\" but was \"" + blank + "\"");
           }
           cipherSuite = reader.readLine();
@@ -428,21 +551,37 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
       this.requestMethod = httpConnection.getRequestMethod();
       this.responseHeaders = RawHeaders.fromMultimap(httpConnection.getHeaderFields(), true);
 
-      if (isHttps()) {
-        HttpsURLConnection httpsConnection = (HttpsURLConnection) httpConnection;
-        cipherSuite = httpsConnection.getCipherSuite();
+      SSLSocket sslSocket = getSslSocket(httpConnection);
+      if (sslSocket != null) {
+        cipherSuite = sslSocket.getSession().getCipherSuite();
         Certificate[] peerCertificatesNonFinal = null;
         try {
-          peerCertificatesNonFinal = httpsConnection.getServerCertificates();
+          peerCertificatesNonFinal = sslSocket.getSession().getPeerCertificates();
         } catch (SSLPeerUnverifiedException ignored) {
         }
         peerCertificates = peerCertificatesNonFinal;
-        localCertificates = httpsConnection.getLocalCertificates();
+        localCertificates = sslSocket.getSession().getLocalCertificates();
       } else {
         cipherSuite = null;
         peerCertificates = null;
         localCertificates = null;
       }
+    }
+
+    /**
+     * Returns the SSL socket used by {@code httpConnection} for HTTPS, nor null
+     * if the connection isn't using HTTPS. Since we permit redirects across
+     * protocols (HTTP to HTTPS or vice versa), the implementation type of the
+     * connection doesn't necessarily match the implementation type of its HTTP
+     * engine.
+     */
+    private SSLSocket getSslSocket(HttpURLConnection httpConnection) {
+      HttpEngine engine = httpConnection instanceof HttpsURLConnectionImpl
+          ? ((HttpsURLConnectionImpl) httpConnection).getHttpEngine()
+          : ((HttpURLConnectionImpl) httpConnection).getHttpEngine();
+      return engine instanceof HttpsEngine
+          ? ((HttpsEngine) engine).getSslSocket()
+          : null;
     }
 
     public void writeTo(DiskLruCache.Editor editor) throws IOException {
@@ -490,7 +629,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
         }
         return result;
       } catch (CertificateException e) {
-        throw new IOException(e);
+        throw new IOException(e.getMessage());
       }
     }
 
@@ -507,7 +646,7 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
           writer.write(line + '\n');
         }
       } catch (CertificateEncodingException e) {
-        throw new IOException(e);
+        throw new IOException(e.getMessage());
       }
     }
 

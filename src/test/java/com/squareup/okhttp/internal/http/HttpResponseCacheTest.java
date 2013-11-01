@@ -19,7 +19,9 @@ package com.squareup.okhttp.internal.http;
 import com.google.mockwebserver.MockResponse;
 import com.google.mockwebserver.MockWebServer;
 import com.google.mockwebserver.RecordedRequest;
+import com.squareup.okhttp.HttpResponseCache;
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.ResponseSource;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
@@ -87,6 +89,7 @@ public final class HttpResponseCacheTest {
   };
   private final OkHttpClient client = new OkHttpClient();
   private MockWebServer server = new MockWebServer();
+  private MockWebServer server2 = new MockWebServer();
   private HttpResponseCache cache;
   private final CookieManager cookieManager = new CookieManager();
 
@@ -111,8 +114,9 @@ public final class HttpResponseCacheTest {
 
   @After public void tearDown() throws Exception {
     server.shutdown();
+    server2.shutdown();
     ResponseCache.setDefault(null);
-    cache.getCache().delete();
+    cache.delete();
     CookieHandler.setDefault(null);
   }
 
@@ -233,6 +237,7 @@ public final class HttpResponseCacheTest {
           Map<String, List<String>> requestHeaders) throws IOException {
         return null;
       }
+
       @Override public CacheRequest put(URI uri, URLConnection conn) throws IOException {
         HttpURLConnection httpConnection = (HttpURLConnection) conn;
         try {
@@ -441,6 +446,42 @@ public final class HttpResponseCacheTest {
     HttpsURLConnection connection2 = (HttpsURLConnection) client.open(server.getUrl("/"));
     connection1.setSSLSocketFactory(sslContext.getSocketFactory());
     connection1.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
+    assertEquals("ABC", readAscii(connection2));
+
+    assertEquals(4, cache.getRequestCount()); // 2 direct + 2 redirect = 4
+    assertEquals(2, cache.getHitCount());
+  }
+
+  /**
+   * We've had bugs where caching and cross-protocol redirects yield class
+   * cast exceptions internal to the cache because we incorrectly assumed that
+   * HttpsURLConnection was always HTTPS and HttpURLConnection was always HTTP;
+   * in practice redirects mean that each can do either.
+   *
+   * https://github.com/square/okhttp/issues/214
+   */
+  @Test public void secureResponseCachingAndProtocolRedirects() throws IOException {
+    server2.useHttps(sslContext.getSocketFactory(), false);
+    server2.enqueue(new MockResponse().addHeader("Last-Modified: " + formatDate(-1, TimeUnit.HOURS))
+        .addHeader("Expires: " + formatDate(1, TimeUnit.HOURS))
+        .setBody("ABC"));
+    server2.enqueue(new MockResponse().setBody("DEF"));
+    server2.play();
+
+    server.enqueue(new MockResponse().addHeader("Last-Modified: " + formatDate(-1, TimeUnit.HOURS))
+        .addHeader("Expires: " + formatDate(1, TimeUnit.HOURS))
+        .setResponseCode(HttpURLConnection.HTTP_MOVED_PERM)
+        .addHeader("Location: " + server2.getUrl("/")));
+    server.play();
+
+    client.setSslSocketFactory(sslContext.getSocketFactory());
+    client.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
+
+    HttpURLConnection connection1 = client.open(server.getUrl("/"));
+    assertEquals("ABC", readAscii(connection1));
+
+    // Cached!
+    HttpURLConnection connection2 = client.open(server.getUrl("/"));
     assertEquals("ABC", readAscii(connection2));
 
     assertEquals(4, cache.getRequestCount()); // 2 direct + 2 redirect = 4
@@ -771,6 +812,28 @@ public final class HttpResponseCacheTest {
     assertEquals("C", readAscii(openConnection(url)));
   }
 
+  @Test public void postInvalidatesCacheWithUncacheableResponse() throws Exception {
+    // 1. seed the cache
+    // 2. invalidate it with uncacheable response
+    // 3. expect a cache miss
+    server.enqueue(
+        new MockResponse().setBody("A").addHeader("Expires: " + formatDate(1, TimeUnit.HOURS)));
+    server.enqueue(new MockResponse().setBody("B").setResponseCode(500));
+    server.enqueue(new MockResponse().setBody("C"));
+    server.play();
+
+    URL url = server.getUrl("/");
+
+    assertEquals("A", readAscii(openConnection(url)));
+
+    HttpURLConnection invalidate = openConnection(url);
+    invalidate.setRequestMethod("POST");
+    addRequestBodyIfNecessary("POST", invalidate);
+    assertEquals("B", readAscii(invalidate));
+
+    assertEquals("C", readAscii(openConnection(url)));
+  }
+
   @Test public void etag() throws Exception {
     RecordedRequest conditionalRequest =
         assertConditionallyCached(new MockResponse().addHeader("ETag: v1"));
@@ -970,7 +1033,7 @@ public final class HttpResponseCacheTest {
     assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
     URLConnection connection = openConnection(server.getUrl("/"));
     connection.addRequestProperty("Cache-Control", "only-if-cached");
-    assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
+    assertEquals("A", readAscii(connection));
   }
 
   @Test public void requestOnlyIfCachedWithConditionalResponseCached() throws IOException {
@@ -1582,6 +1645,74 @@ public final class HttpResponseCacheTest {
     assertEquals("GET, HEAD", connection3.getHeaderField("Allow"));
 
     assertEquals(2, server.getRequestCount());
+  }
+
+  @Test public void responseSourceHeaderCached() throws IOException {
+    server.enqueue(new MockResponse().setBody("A")
+        .addHeader("Cache-Control: max-age=30")
+        .addHeader("Date: " + formatDate(0, TimeUnit.MINUTES)));
+    server.play();
+
+    assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
+    URLConnection connection = openConnection(server.getUrl("/"));
+    connection.addRequestProperty("Cache-Control", "only-if-cached");
+    assertEquals("A", readAscii(connection));
+
+    String source = connection.getHeaderField(ResponseHeaders.RESPONSE_SOURCE);
+    assertEquals(ResponseSource.CACHE.toString() + " 200", source);
+  }
+
+  @Test public void responseSourceHeaderConditionalCacheFetched() throws IOException {
+    server.enqueue(new MockResponse().setBody("A")
+        .addHeader("Cache-Control: max-age=30")
+        .addHeader("Date: " + formatDate(-31, TimeUnit.MINUTES)));
+    server.enqueue(new MockResponse().setBody("B")
+        .addHeader("Cache-Control: max-age=30")
+        .addHeader("Date: " + formatDate(0, TimeUnit.MINUTES)));
+    server.play();
+
+    assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
+    HttpURLConnection connection = openConnection(server.getUrl("/"));
+    assertEquals("B", readAscii(connection));
+
+    String source = connection.getHeaderField(ResponseHeaders.RESPONSE_SOURCE);
+    assertEquals(ResponseSource.CONDITIONAL_CACHE.toString() + " 200", source);
+  }
+
+  @Test public void responseSourceHeaderConditionalCacheNotFetched() throws IOException {
+    server.enqueue(new MockResponse().setBody("A")
+        .addHeader("Cache-Control: max-age=0")
+        .addHeader("Date: " + formatDate(0, TimeUnit.MINUTES)));
+    server.enqueue(new MockResponse().setResponseCode(304));
+    server.play();
+
+    assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
+    HttpURLConnection connection = openConnection(server.getUrl("/"));
+    assertEquals("A", readAscii(connection));
+
+    String source = connection.getHeaderField(ResponseHeaders.RESPONSE_SOURCE);
+    assertEquals(ResponseSource.CONDITIONAL_CACHE.toString() + " 304", source);
+  }
+
+  @Test public void responseSourceHeaderFetched() throws IOException {
+    server.enqueue(new MockResponse().setBody("A"));
+    server.play();
+
+    URLConnection connection = openConnection(server.getUrl("/"));
+    assertEquals("A", readAscii(connection));
+
+    String source = connection.getHeaderField(ResponseHeaders.RESPONSE_SOURCE);
+    assertEquals(ResponseSource.NETWORK.toString() + " 200", source);
+  }
+
+  @Test public void emptyResponseHeaderNameFromCacheIsLenient() throws Exception {
+    server.enqueue(new MockResponse()
+        .addHeader("Cache-Control: max-age=120")
+        .addHeader(": A")
+        .setBody("body"));
+    server.play();
+    HttpURLConnection connection = client.open(server.getUrl("/"));
+    assertEquals("A", connection.getHeaderField(""));
   }
 
   /**

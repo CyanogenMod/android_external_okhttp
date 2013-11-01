@@ -17,8 +17,8 @@
 package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.Connection;
+import com.squareup.okhttp.internal.AbstractOutputStream;
 import com.squareup.okhttp.internal.Util;
-import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,14 +30,6 @@ import java.net.Socket;
 import static com.squareup.okhttp.internal.Util.checkOffsetAndCount;
 
 public final class HttpTransport implements Transport {
-  /**
-   * The maximum number of bytes to buffer when sending headers and a request
-   * body. When the headers and body can be sent in a single write, the
-   * request completes sooner. In one WiFi benchmark, using a large enough
-   * buffer sped up some uploads by half.
-   */
-  private static final int MAX_REQUEST_BUFFER_LENGTH = 32768;
-
   /**
    * The timeout to use while discarding a stream of input data. Since this is
    * used for connection reuse, this timeout should be significantly less than
@@ -86,18 +78,23 @@ public final class HttpTransport implements Transport {
     }
 
     // Stream a request body of a known length.
-    int fixedContentLength = httpEngine.policy.getFixedContentLength();
+    long fixedContentLength = httpEngine.policy.getFixedContentLength();
     if (fixedContentLength != -1) {
       httpEngine.requestHeaders.setContentLength(fixedContentLength);
       writeRequestHeaders();
       return new FixedLengthOutputStream(requestOut, fixedContentLength);
     }
 
+    long contentLength = httpEngine.requestHeaders.getContentLength();
+    if (contentLength > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException("Use setFixedLengthStreamingMode() or "
+          + "setChunkedStreamingMode() for requests larger than 2 GiB.");
+    }
+
     // Buffer a request body of a known length.
-    int contentLength = httpEngine.requestHeaders.getContentLength();
     if (contentLength != -1) {
       writeRequestHeaders();
-      return new RetryableOutputStream(contentLength);
+      return new RetryableOutputStream((int) contentLength);
     }
 
     // Buffer a request body of an unknown length. Don't write request
@@ -129,22 +126,19 @@ public final class HttpTransport implements Transport {
    */
   public void writeRequestHeaders() throws IOException {
     httpEngine.writingRequestHeaders();
-    int contentLength = httpEngine.requestHeaders.getContentLength();
     RawHeaders headersToSend = httpEngine.requestHeaders.getHeaders();
     byte[] bytes = headersToSend.toBytes();
-
-    if (contentLength != -1 && bytes.length + contentLength <= MAX_REQUEST_BUFFER_LENGTH) {
-      requestOut = new BufferedOutputStream(socketOut, bytes.length + contentLength);
-    }
-
     requestOut.write(bytes);
   }
 
   @Override public ResponseHeaders readResponseHeaders() throws IOException {
-    RawHeaders headers = RawHeaders.fromBytes(socketIn);
-    httpEngine.connection.setHttpMinorVersion(headers.getHttpMinorVersion());
-    httpEngine.receiveHeaders(headers);
-    return new ResponseHeaders(httpEngine.uri, headers);
+    RawHeaders rawHeaders = RawHeaders.fromBytes(socketIn);
+    httpEngine.connection.setHttpMinorVersion(rawHeaders.getHttpMinorVersion());
+    httpEngine.receiveHeaders(rawHeaders);
+
+    ResponseHeaders headers = new ResponseHeaders(httpEngine.uri, rawHeaders);
+    headers.setTransport("http/1.1");
+    return headers;
   }
 
   public boolean makeReusable(boolean streamCancelled, OutputStream requestBodyOut,
@@ -154,7 +148,7 @@ public final class HttpTransport implements Transport {
     }
 
     // We cannot reuse sockets that have incomplete output.
-    if (requestBodyOut != null && !((AbstractHttpOutputStream) requestBodyOut).closed) {
+    if (requestBodyOut != null && !((AbstractOutputStream) requestBodyOut).isClosed()) {
       return false;
     }
 
@@ -224,11 +218,11 @@ public final class HttpTransport implements Transport {
   }
 
   /** An HTTP body with a fixed length known in advance. */
-  private static final class FixedLengthOutputStream extends AbstractHttpOutputStream {
+  private static final class FixedLengthOutputStream extends AbstractOutputStream {
     private final OutputStream socketOut;
-    private int bytesRemaining;
+    private long bytesRemaining;
 
-    private FixedLengthOutputStream(OutputStream socketOut, int bytesRemaining) {
+    private FixedLengthOutputStream(OutputStream socketOut, long bytesRemaining) {
       this.socketOut = socketOut;
       this.bytesRemaining = bytesRemaining;
     }
@@ -266,7 +260,7 @@ public final class HttpTransport implements Transport {
    * buffered until {@code maxChunkLength} bytes are ready, at which point the
    * chunk is written and the buffer is cleared.
    */
-  private static final class ChunkedOutputStream extends AbstractHttpOutputStream {
+  private static final class ChunkedOutputStream extends AbstractOutputStream {
     private static final byte[] CRLF = { '\r', '\n' };
     private static final byte[] HEX_DIGITS = {
         '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'

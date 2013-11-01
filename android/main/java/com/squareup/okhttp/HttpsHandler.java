@@ -22,20 +22,32 @@ import java.net.Proxy;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
+import java.util.Arrays;
+import java.util.List;
 
-public final class HttpsHandler extends URLStreamHandler {
-    @Override protected URLConnection openConnection(URL url) throws IOException {
-        return new OkHttpClient().open(url);
-    }
+import javax.net.ssl.DefaultHostnameVerifier;
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.HttpsURLConnection;
 
-    @Override protected URLConnection openConnection(URL url, Proxy proxy) throws IOException {
-        if (url == null || proxy == null) {
-            throw new IllegalArgumentException("url == null || proxy == null");
-        }
-        return new OkHttpClient().setProxy(proxy).open(url);
-    }
+public final class HttpsHandler extends HttpHandler {
+    private static final List<String> ENABLED_TRANSPORTS = Arrays.asList("http/1.1");
 
     @Override protected int getDefaultPort() {
         return 443;
+    }
+
+    @Override
+    protected OkHttpClient newOkHttpClient(Proxy proxy) {
+        OkHttpClient client = super.newOkHttpClient(proxy);
+        client.setTransports(ENABLED_TRANSPORTS);
+
+        HostnameVerifier verifier = HttpsURLConnection.getDefaultHostnameVerifier();
+        // Assume that the internal verifier is better than the
+        // default verifier.
+        if (!(verifier instanceof DefaultHostnameVerifier)) {
+            client.setHostnameVerifier(verifier);
+        }
+
+        return client;
     }
 }
