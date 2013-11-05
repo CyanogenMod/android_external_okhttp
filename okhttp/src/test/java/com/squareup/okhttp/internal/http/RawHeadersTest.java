@@ -20,7 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 import org.junit.Test;
 
-import static junit.framework.Assert.assertNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertEquals;
 
 public final class RawHeadersTest {
