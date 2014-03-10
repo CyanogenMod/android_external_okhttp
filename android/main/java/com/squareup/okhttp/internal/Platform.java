@@ -20,28 +20,25 @@ import dalvik.system.SocketTagger;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.util.List;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import javax.net.ssl.SSLSocket;
+
 import com.android.org.conscrypt.OpenSSLSocketImpl;
+import com.squareup.okhttp.Protocol;
+import okio.ByteString;
 
 /**
  * Access to proprietary Android APIs. Doesn't use reflection.
  */
 public final class Platform {
     private static final Platform PLATFORM = new Platform();
-
-    /*
-     * Default for the maximum transmission unit, used only if
-     * there's an error retrieving it via NetworkInterface.
-     */
-    private static final int DEFAULT_MTU = 1400;
 
     public static Platform get() {
         return PLATFORM;
@@ -78,19 +75,31 @@ public final class Platform {
     /**
      * Returns the negotiated protocol, or null if no protocol was negotiated.
      */
-    public byte[] getNpnSelectedProtocol(SSLSocket socket) {
-        return socket instanceof OpenSSLSocketImpl
-                ? ((OpenSSLSocketImpl) socket).getNpnSelectedProtocol()
-                : null;
+    public ByteString getNpnSelectedProtocol(SSLSocket socket) {
+        if (!(socket instanceof OpenSSLSocketImpl)) {
+            return null;
+        }
+
+        OpenSSLSocketImpl socketImpl = (OpenSSLSocketImpl) socket;
+        // Prefer ALPN's result if it is present.
+        byte[] alpnResult = socketImpl.getAlpnSelectedProtocol();
+        if (alpnResult != null) {
+            return ByteString.of(alpnResult);
+        }
+        byte[] npnResult = socketImpl.getNpnSelectedProtocol();
+        return npnResult == null ? null : ByteString.of(npnResult);
     }
 
     /**
      * Sets client-supported protocols on a socket to send to a server. The
      * protocols are only sent if the socket implementation supports NPN.
      */
-    public void setNpnProtocols(SSLSocket socket, byte[] npnProtocols) {
+    public void setNpnProtocols(SSLSocket socket, List<Protocol> npnProtocols) {
         if (socket instanceof OpenSSLSocketImpl) {
-            ((OpenSSLSocketImpl) socket).setNpnProtocols(npnProtocols);
+            OpenSSLSocketImpl socketImpl = (OpenSSLSocketImpl) socket;
+            byte[] protocols = concatLengthPrefixed(npnProtocols);
+            socketImpl.setAlpnProtocols(protocols);
+            socketImpl.setNpnProtocols(protocols);
         }
     }
 
@@ -104,28 +113,6 @@ public final class Platform {
         return new DeflaterOutputStream(out, deflater, syncFlush);
     }
 
-    /**
-     * Returns the maximum transmission unit of the network interface used by
-     * {@code socket}, or a reasonable default if there's an error retrieving
-     * it from the socket.
-     *
-     * <p>The returned value should only be used as an optimization; such as to
-     * size buffers efficiently.
-     */
-    public int getMtu(Socket socket) {
-        try {
-            NetworkInterface networkInterface = NetworkInterface.getByInetAddress(
-                socket.getLocalAddress());
-            if (networkInterface != null) {
-                return networkInterface.getMTU();
-            }
-
-            return DEFAULT_MTU;
-        } catch (SocketException exception) {
-            return DEFAULT_MTU;
-        }
-    }
-
     public void connectSocket(Socket socket, InetSocketAddress address,
               int connectTimeout) throws IOException {
         socket.connect(address, connectTimeout);
@@ -134,5 +121,27 @@ public final class Platform {
     /** Prefix used on custom headers. */
     public String getPrefix() {
         return "X-Android";
+    }
+
+    /**
+     * Concatenation of 8-bit, length prefixed protocol names.
+     *
+     * http://tools.ietf.org/html/draft-agl-tls-nextprotoneg-04#page-4
+     */
+    static byte[] concatLengthPrefixed(List<Protocol> protocols) {
+        int size = 0;
+        for (Protocol protocol : protocols) {
+            size += protocol.name.size() + 1; // add a byte for 8-bit length prefix.
+        }
+        byte[] result = new byte[size];
+        int pos = 0;
+        for (Protocol protocol : protocols) {
+            int nameSize = protocol.name.size();
+            result[pos++] = (byte) nameSize;
+            // toByteArray allocates an array, but this is only called on new connections.
+            System.arraycopy(protocol.name.toByteArray(), 0, result, pos, nameSize);
+            pos += nameSize;
+        }
+        return result;
     }
 }
