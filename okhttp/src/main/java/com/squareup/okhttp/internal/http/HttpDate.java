@@ -26,7 +26,7 @@ import java.util.TimeZone;
 /**
  * Best-effort parser for HTTP dates.
  */
-final class HttpDate {
+public final class HttpDate {
 
   /**
    * Most websites serve cookies in the blessed format. Eagerly create the parser to ensure such
@@ -45,13 +45,21 @@ final class HttpDate {
   private static final String[] BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS = new String[] {
       "EEEE, dd-MMM-yy HH:mm:ss zzz", // RFC 1036
       "EEE MMM d HH:mm:ss yyyy", // ANSI C asctime()
-      "EEE, dd-MMM-yyyy HH:mm:ss z", "EEE, dd-MMM-yyyy HH-mm-ss z", "EEE, dd MMM yy HH:mm:ss z",
-      "EEE dd-MMM-yyyy HH:mm:ss z", "EEE dd MMM yyyy HH:mm:ss z", "EEE dd-MMM-yyyy HH-mm-ss z",
-      "EEE dd-MMM-yy HH:mm:ss z", "EEE dd MMM yy HH:mm:ss z", "EEE,dd-MMM-yy HH:mm:ss z",
-      "EEE,dd-MMM-yyyy HH:mm:ss z", "EEE, dd-MM-yyyy HH:mm:ss z",
+      "EEE, dd-MMM-yyyy HH:mm:ss z",
+      "EEE, dd-MMM-yyyy HH-mm-ss z",
+      "EEE, dd MMM yy HH:mm:ss z",
+      "EEE dd-MMM-yyyy HH:mm:ss z",
+      "EEE dd MMM yyyy HH:mm:ss z",
+      "EEE dd-MMM-yyyy HH-mm-ss z",
+      "EEE dd-MMM-yy HH:mm:ss z",
+      "EEE dd MMM yy HH:mm:ss z",
+      "EEE,dd-MMM-yy HH:mm:ss z",
+      "EEE,dd-MMM-yyyy HH:mm:ss z",
+      "EEE, dd-MM-yyyy HH:mm:ss z",
 
-            /* RI bug 6641315 claims a cookie of this format was once served by www.yahoo.com */
-      "EEE MMM d yyyy HH:mm:ss z", };
+      /* RI bug 6641315 claims a cookie of this format was once served by www.yahoo.com */
+      "EEE MMM d yyyy HH:mm:ss z",
+  };
 
   private static final DateFormat[] BROWSER_COMPATIBLE_DATE_FORMATS =
       new DateFormat[BROWSER_COMPATIBLE_DATE_FORMAT_STRINGS.length];

@@ -4,7 +4,10 @@ Description: "OkHttp: An HTTP+SPDY client for Android and Java applications."
 
 Local patches
 -------------
-- Changes to libcore/util/Libcore.java to remove OpenJDK / Jetty dependencies.
-- Change SpdyWriter.java to call Libcore#newDeflaterOutputStream instead
-  of using a hidden constructor.
 
+- Addition of classes in android/ :
+  - com.squareup.okhttp.internal.Platform - to replace the Platform class that
+    comes with okhttp. No use of reflection.
+  - com.squareup.okhttp.Http(s)Handler - integration with Android's corelibs.
+  - Removal of reference to a codehause annotation used in
+    okio/src/main/java/okio/DeflaterSink.java

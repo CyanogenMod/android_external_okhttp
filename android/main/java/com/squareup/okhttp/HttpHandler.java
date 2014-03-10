@@ -19,6 +19,7 @@ package com.squareup.okhttp;
 
 import java.io.IOException;
 import java.net.Proxy;
+import java.net.ResponseCache;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
@@ -46,6 +47,11 @@ public class HttpHandler extends URLStreamHandler {
             client.setProxy(proxy);
         }
 
+        // Explicitly set the response cache.
+        ResponseCache responseCache = ResponseCache.getDefault();
+        if (responseCache != null) {
+          client.setResponseCache(responseCache);
+        }
         return client;
     }
 }
