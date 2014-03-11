@@ -24,6 +24,14 @@ Download [the latest JAR][2] or grab via Maven:
 Building
 --------
 
+OkHttp requires Java 7 to build and run tests. Runtime compatibility with Java 6 is enforced as
+part of the build to ensure compliance with Android and older versions of the JVM.
+
+
+
+Testing
+-------
+
 ### On the Desktop
 
 Run OkHttp tests on the desktop with Maven. Running SPDY tests on the desktop uses
@@ -45,10 +53,11 @@ Java 6, otherwise the test class will be silently omitted from the `.dex` file.
 mvn clean
 mvn package -DskipTests
 vogar \
-    --classpath ~/.m2/repository/org/bouncycastle/bcprov-jdk15on/1.47/bcprov-jdk15on-1.47.jar \
-    --classpath ~/.m2/repository/com/google/mockwebserver/mockwebserver/20130122/mockwebserver-20130122.jar \
-    --classpath target/okhttp-0.9-SNAPSHOT.jar \
-    ./src/test/java
+    --classpath ~/.m2/repository/org/bouncycastle/bcprov-jdk15on/1.48/bcprov-jdk15on-1.48.jar \
+    --classpath mockwebserver/target/mockwebserver-2.0.0-SNAPSHOT.jar \
+    --classpath okhttp-protocols/target/okhttp-protocols-2.0.0-SNAPSHOT.jar \
+    --classpath okhttp/target/okhttp-2.0.0-SNAPSHOT.jar \
+    okhttp/src/test
 ```
 
 MockWebServer
@@ -94,4 +103,4 @@ License
  [2]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=okhttp&v=LATEST&c=jar-with-dependencies
  [3]: http://wiki.eclipse.org/Jetty/Feature/NPN
  [4]: https://code.google.com/p/vogar/
- [5]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=mockwebserver&v=LATEST&c=jar-with-dependencies
+ [5]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=mockwebserver&v=LATEST

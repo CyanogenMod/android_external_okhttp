@@ -33,6 +33,8 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLProtocolException;
 
 import static com.squareup.okhttp.internal.Util.getEffectivePort;
 
@@ -116,7 +118,7 @@ public final class RouteSelector {
           if (!hasNextPostponed()) {
             throw new NoSuchElementException();
           }
-          return new Connection(nextPostponed());
+          return new Connection(pool, nextPostponed());
         }
         lastProxy = nextProxy();
         resetNextInetSocketAddress(lastProxy);
@@ -134,7 +136,7 @@ public final class RouteSelector {
       return next(method);
     }
 
-    return new Connection(route);
+    return new Connection(pool, route);
   }
 
   /**
@@ -142,13 +144,27 @@ public final class RouteSelector {
    * failure on a connection returned by this route selector.
    */
   public void connectFailed(Connection connection, IOException failure) {
+    // If this is a recycled connection, don't count its failure against the route.
+    if (connection.recycleCount() > 0) return;
+
     Route failedRoute = connection.getRoute();
     if (failedRoute.getProxy().type() != Proxy.Type.DIRECT && proxySelector != null) {
       // Tell the proxy selector when we fail to connect on a fresh connection.
       proxySelector.connectFailed(uri, failedRoute.getProxy().address(), failure);
     }
 
-    routeDatabase.failed(failedRoute, failure);
+    routeDatabase.failed(failedRoute);
+
+    // If the previously returned route's problem was not related to TLS, and
+    // the next route only changes the TLS mode, we shouldn't even attempt it.
+    // This suppresses it in both this selector and also in the route database.
+    if (hasNextTlsMode()
+        && !(failure instanceof SSLHandshakeException)
+        && !(failure instanceof SSLProtocolException)) {
+      boolean modernTls = nextTlsMode() == TLS_MODE_MODERN;
+      Route routeToSuppress = new Route(address, lastProxy, lastInetSocketAddress, modernTls);
+      routeDatabase.failed(routeToSuppress);
+    }
   }
 
   /** Resets {@link #nextProxy} to the first option. */
