@@ -42,8 +42,13 @@ LOCAL_MODULE := okhttp-static
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_common_src_files)
 LOCAL_JAVACFLAGS := -encoding UTF-8
-LOCAL_JAVA_LIBRARIES := core
-LOCAL_NO_STANDARD_LIBRARIES := true
+# This is set when building apps - exclude platform targets.
+ifneq ($(TARGET_BUILD_APPS),)
+    LOCAL_SDK_VERSION := 11
+else
+    LOCAL_JAVA_LIBRARIES := core
+    LOCAL_NO_STANDARD_LIBRARIES := true
+endif
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_STATIC_JAVA_LIBRARY)
 
