@@ -5,8 +5,7 @@ sourceSets {
     main {
         java {
             srcDirs = [
-                'okhttp/src/main/java',
-                'okhttp-protocols/src/main/java',
+                'src/main/java',
             ]
         }
     }
