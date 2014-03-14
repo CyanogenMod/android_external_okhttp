@@ -27,6 +27,7 @@ import java.io.OutputStream;
 import java.net.CacheRequest;
 import java.net.ProtocolException;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import okio.BufferedSink;
 import okio.BufferedSource;
 import okio.Deadline;
@@ -72,18 +73,20 @@ public final class HttpConnection {
 
   private final ConnectionPool pool;
   private final Connection connection;
+  private final Socket socket;
   private final BufferedSource source;
   private final BufferedSink sink;
 
   private int state = STATE_IDLE;
   private int onIdle = ON_IDLE_HOLD;
 
-  public HttpConnection(ConnectionPool pool, Connection connection, BufferedSource source,
-      BufferedSink sink) {
+  public HttpConnection(ConnectionPool pool, Connection connection, Socket socket)
+      throws IOException {
     this.pool = pool;
     this.connection = connection;
-    this.source = source;
-    this.sink = sink;
+    this.socket = socket;
+    this.source = Okio.buffer(Okio.source(socket.getInputStream()));
+    this.sink = Okio.buffer(Okio.sink(socket.getOutputStream()));
   }
 
   /**
@@ -123,6 +126,31 @@ public final class HttpConnection {
     sink.flush();
   }
 
+  /** Returns the number of buffered bytes immediately readable. */
+  public long bufferSize() {
+    return source.buffer().size();
+  }
+
+  /** Test for a stale socket. */
+  public boolean isReadable() {
+    try {
+      int readTimeout = socket.getSoTimeout();
+      try {
+        socket.setSoTimeout(1);
+        if (source.exhausted()) {
+          return false; // Stream is exhausted; socket is closed.
+        }
+        return true;
+      } finally {
+        socket.setSoTimeout(readTimeout);
+      }
+    } catch (SocketTimeoutException ignored) {
+      return true; // Read timed out; socket is good.
+    } catch (IOException e) {
+      return false; // Couldn't read; socket is closed.
+    }
+  }
+
   /** Returns bytes of a request header for sending on an HTTP transport. */
   public void writeRequest(Headers headers, String requestLine) throws IOException {
     if (state != STATE_IDLE) throw new IllegalStateException("state: " + state);
@@ -144,7 +172,7 @@ public final class HttpConnection {
     }
 
     while (true) {
-      String statusLineString = source.readUtf8Line(true);
+      String statusLineString = source.readUtf8LineStrict();
       StatusLine statusLine = new StatusLine(statusLineString);
 
       Response.Builder responseBuilder = new Response.Builder()
@@ -165,7 +193,7 @@ public final class HttpConnection {
   /** Reads headers or trailers into {@code builder}. */
   public void readHeaders(Headers.Builder builder) throws IOException {
     // parse the result headers until the first blank line
-    for (String line; (line = source.readUtf8Line(true)).length() != 0; ) {
+    for (String line; (line = source.readUtf8LineStrict()).length() != 0; ) {
       builder.addLine(line);
     }
   }
@@ -177,7 +205,6 @@ public final class HttpConnection {
    * that may never occur.
    */
   public boolean discard(Source in, int timeoutMillis) {
-    Socket socket = connection.getSocket();
     try {
       int socketTimeout = socket.getSoTimeout();
       socket.setSoTimeout(timeoutMillis);
@@ -356,7 +383,7 @@ public final class HttpConnection {
      * Closes the cache entry and makes the socket available for reuse. This
      * should be invoked when the end of the body has been reached.
      */
-    protected final void endOfInput() throws IOException {
+    protected final void endOfInput(boolean recyclable) throws IOException {
       if (state != STATE_READING_RESPONSE_BODY) throw new IllegalStateException("state: " + state);
 
       if (cacheRequest != null) {
@@ -364,7 +391,7 @@ public final class HttpConnection {
       }
 
       state = STATE_IDLE;
-      if (onIdle == ON_IDLE_POOL) {
+      if (recyclable && onIdle == ON_IDLE_POOL) {
         onIdle = ON_IDLE_HOLD; // Set the on idle policy back to the default.
         pool.recycle(connection);
       } else if (onIdle == ON_IDLE_CLOSE) {
@@ -402,7 +429,7 @@ public final class HttpConnection {
       super(cacheRequest);
       bytesRemaining = length;
       if (bytesRemaining == 0) {
-        endOfInput();
+        endOfInput(true);
       }
     }
 
@@ -421,7 +448,7 @@ public final class HttpConnection {
       bytesRemaining -= read;
       cacheWrite(sink, read);
       if (bytesRemaining == 0) {
-        endOfInput();
+        endOfInput(true);
       }
       return read;
     }
@@ -478,9 +505,9 @@ public final class HttpConnection {
     private void readChunkSize() throws IOException {
       // read the suffix of the previous chunk
       if (bytesRemainingInChunk != NO_CHUNK_YET) {
-        source.readUtf8Line(true);
+        source.readUtf8LineStrict();
       }
-      String chunkSizeString = source.readUtf8Line(true);
+      String chunkSizeString = source.readUtf8LineStrict();
       int index = chunkSizeString.indexOf(";");
       if (index != -1) {
         chunkSizeString = chunkSizeString.substring(0, index);
@@ -495,7 +522,7 @@ public final class HttpConnection {
         Headers.Builder trailersBuilder = new Headers.Builder();
         readHeaders(trailersBuilder);
         httpEngine.receiveHeaders(trailersBuilder.build());
-        endOfInput();
+        endOfInput(true);
       }
     }
 
@@ -530,7 +557,7 @@ public final class HttpConnection {
       long read = source.read(sink, byteCount);
       if (read == -1) {
         inputExhausted = true;
-        endOfInput();
+        endOfInput(false);
         return -1;
       }
       cacheWrite(sink, read);
