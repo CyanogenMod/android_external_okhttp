@@ -21,6 +21,7 @@ import com.squareup.okhttp.internal.Util;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -37,6 +38,8 @@ import okio.BufferedSource;
 import okio.ByteString;
 import okio.OkBuffer;
 import okio.Okio;
+
+import static com.squareup.okhttp.internal.spdy.Settings.DEFAULT_INITIAL_WINDOW_SIZE;
 
 /**
  * A socket connection to a remote peer. A connection hosts streams which can
@@ -89,8 +92,6 @@ public final class SpdyConnection implements Closeable {
   private final PushObserver pushObserver;
   private int nextPingId;
 
-  static final int INITIAL_WINDOW_SIZE = 65535;
-
   /**
    * The total number of bytes consumed by the application, but not yet
    * acknowledged by sending a {@code WINDOW_UPDATE} frame on this connection.
@@ -107,15 +108,12 @@ public final class SpdyConnection implements Closeable {
 
   /** Settings we communicate to the peer. */
   // TODO: Do we want to dynamically adjust settings, or KISS and only set once?
-  final Settings okHttpSettings = new Settings()
-      .set(Settings.INITIAL_WINDOW_SIZE, 0, INITIAL_WINDOW_SIZE);
-      // TODO: implement stream limit
+  final Settings okHttpSettings = new Settings();
       // okHttpSettings.set(Settings.MAX_CONCURRENT_STREAMS, 0, max);
 
   /** Settings we receive from the peer. */
   // TODO: MWS will need to guard on this setting before attempting to push.
-  final Settings peerSettings = new Settings()
-      .set(Settings.INITIAL_WINDOW_SIZE, 0, INITIAL_WINDOW_SIZE);
+  final Settings peerSettings = new Settings();
 
   private boolean receivedInitialPeerSettings = false;
   final FrameReader frameReader;
@@ -151,7 +149,7 @@ public final class SpdyConnection implements Closeable {
     } else {
       throw new AssertionError(protocol);
     }
-    bytesLeftInWriteWindow = peerSettings.getInitialWindowSize();
+    bytesLeftInWriteWindow = peerSettings.getInitialWindowSize(DEFAULT_INITIAL_WINDOW_SIZE);
     frameReader = variant.newReader(builder.source, client);
     frameWriter = variant.newWriter(builder.sink, client);
     maxFrameSize = variant.maxFrameSize();
@@ -502,19 +500,18 @@ public final class SpdyConnection implements Closeable {
     private boolean client;
 
     public Builder(boolean client, Socket socket) throws IOException {
-      this("", client, Okio.buffer(Okio.source(socket.getInputStream())),
-          Okio.buffer(Okio.sink(socket.getOutputStream())));
+      this(((InetSocketAddress) socket.getRemoteSocketAddress()).getHostName(), client, socket);
     }
 
     /**
      * @param client true if this peer initiated the connection; false if this
      *     peer accepted the connection.
      */
-    public Builder(String hostName, boolean client, BufferedSource source, BufferedSink sink) {
+    public Builder(String hostName, boolean client, Socket socket) throws IOException {
       this.hostName = hostName;
       this.client = client;
-      this.source = source;
-      this.sink = sink;
+      this.source = Okio.buffer(Okio.source(socket.getInputStream()));
+      this.sink = Okio.buffer(Okio.sink(socket.getOutputStream()));
     }
 
     public Builder handler(IncomingStreamHandler handler) {
@@ -657,16 +654,13 @@ public final class SpdyConnection implements Closeable {
       long delta = 0;
       SpdyStream[] streamsToNotify = null;
       synchronized (SpdyConnection.this) {
-        int priorWriteWindowSize = peerSettings.getInitialWindowSize();
-        if (clearPrevious) {
-          peerSettings.clear();
-        } else {
-          peerSettings.merge(newSettings);
-        }
+        int priorWriteWindowSize = peerSettings.getInitialWindowSize(DEFAULT_INITIAL_WINDOW_SIZE);
+        if (clearPrevious) peerSettings.clear();
+        peerSettings.merge(newSettings);
         if (getProtocol() == Protocol.HTTP_2) {
           ackSettingsLater();
         }
-        int peerInitialWindowSize = peerSettings.getInitialWindowSize();
+        int peerInitialWindowSize = peerSettings.getInitialWindowSize(DEFAULT_INITIAL_WINDOW_SIZE);
         if (peerInitialWindowSize != -1 && peerInitialWindowSize != priorWriteWindowSize) {
           delta = peerInitialWindowSize - priorWriteWindowSize;
           if (!receivedInitialPeerSettings) {
