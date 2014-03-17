@@ -40,7 +40,17 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
 import okio.ByteString;
 
-/** Configures and creates HTTP connections. */
+/**
+ * Configures and creates HTTP connections. Most applications can use a single
+ * OkHttpClient for all of their HTTP requests - benefiting from a shared
+ * response cache, thread pool, connection re-use, etc.
+ *
+ * Instances of OkHttpClient are intended to be fully configured before they're
+ * shared - once shared they should be treated as immutable and can safely be used
+ * to concurrently open new connections. If required, threads can call
+ * {@link #clone()} to make a shallow copy of the OkHttpClient that can be
+ * safely modified with further configuration changes.
+ */
 public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
 
   private final RouteDatabase routeDatabase;
@@ -279,8 +289,9 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
   }
 
   /**
-   * @deprecated OkHttp 2 enforces an enumeration of {@link Protocol protocols}
-   * that can be selected. Please switch to {@link #setProtocols(java.util.List)}.
+   * @deprecated OkHttp 1.5 enforces an enumeration of {@link Protocol
+   *     protocols} that can be selected. Please switch to {@link
+   *     #setProtocols(java.util.List)}.
    */
   @Deprecated
   public OkHttpClient setTransports(List<String> transports) {
@@ -337,8 +348,9 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
   }
 
   /**
-   * @deprecated OkHttp 2 enforces an enumeration of {@link Protocol protocols}
-   * that can be selected. Please switch to {@link #getProtocols()}.
+   * @deprecated OkHttp 1.5 enforces an enumeration of {@link Protocol
+   *     protocols} that can be selected. Please switch to {@link
+   *     #getProtocols()}.
    */
   @Deprecated
   public List<String> getTransports() {
