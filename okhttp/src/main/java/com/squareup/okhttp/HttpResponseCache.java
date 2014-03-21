@@ -19,6 +19,9 @@ package com.squareup.okhttp;
 import com.squareup.okhttp.internal.DiskLruCache;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.HttpMethod;
+import com.squareup.okhttp.internal.http.HttpURLConnectionImpl;
+import com.squareup.okhttp.internal.http.HttpsURLConnectionImpl;
+import com.squareup.okhttp.internal.http.JavaApiConverter;
 import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -51,6 +54,18 @@ import static com.squareup.okhttp.internal.Util.UTF_8;
 /**
  * Caches HTTP and HTTPS responses to the filesystem so they may be reused,
  * saving time and bandwidth.
+ *
+ * <p>This cache extends {@link ResponseCache} but is only intended for use
+ * with OkHttp and is not a general-purpose implementation: The
+ * {@link ResponseCache} API requires that the subclass handles cache-control
+ * logic as well as storage. In OkHttp the {@link HttpResponseCache} only
+ * handles cursory cache-control logic.
+ *
+ * <p>To maintain support for previous releases the {@link HttpResponseCache}
+ * will disregard any {@link #put(java.net.URI, java.net.URLConnection)}
+ * calls with a URLConnection that is not from OkHttp. It will, however,
+ * return cached data for any calls to {@link #get(java.net.URI, String,
+ * java.util.Map)}.
  *
  * <h3>Cache Optimization</h3>
  * To measure cache effectiveness, this class tracks three statistics:
@@ -125,13 +140,16 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     cache = DiskLruCache.open(directory, VERSION, ENTRY_COUNT, maxSize);
   }
 
-  @Override public CacheResponse get(URI uri, String s, Map<String, List<String>> stringListMap)
+  @Override public CacheResponse get(
+      URI uri, String requestMethod, Map<String, List<String>> requestHeaders)
       throws IOException {
-    throw new UnsupportedOperationException("This is not a general purpose response cache.");
-  }
 
-  @Override public CacheRequest put(URI uri, URLConnection urlConnection) throws IOException {
-    throw new UnsupportedOperationException("This is not a general purpose response cache.");
+    Request request = JavaApiConverter.createOkRequest(uri, requestMethod, requestHeaders);
+    Response response = get(request);
+    if (response == null) {
+      return null;
+    }
+    return JavaApiConverter.createJavaCacheResponse(response);
   }
 
   private static String urlToKey(Request requst) {
@@ -161,6 +179,18 @@ public final class HttpResponseCache extends ResponseCache implements OkResponse
     }
 
     return response;
+  }
+
+  @Override public CacheRequest put(URI uri, URLConnection urlConnection) throws IOException {
+    if (!isCacheableConnection(urlConnection)) {
+      return null;
+    }
+    return put(JavaApiConverter.createOkResponse(uri, urlConnection));
+  }
+
+  private static boolean isCacheableConnection(URLConnection httpConnection) {
+    return (httpConnection instanceof HttpURLConnectionImpl)
+        || (httpConnection instanceof HttpsURLConnectionImpl);
   }
 
   @Override public CacheRequest put(Response response) throws IOException {
