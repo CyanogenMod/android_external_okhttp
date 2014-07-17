@@ -18,9 +18,9 @@ package com.squareup.okhttp.internal.http;
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.ConnectionPool;
+import com.squareup.okhttp.HostResolver;
 import com.squareup.okhttp.Route;
 import com.squareup.okhttp.RouteDatabase;
-import com.squareup.okhttp.internal.Dns;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -55,7 +55,7 @@ public final class RouteSelector {
   private final URI uri;
   private final ProxySelector proxySelector;
   private final ConnectionPool pool;
-  private final Dns dns;
+  private final HostResolver hostResolver;
   private final RouteDatabase routeDatabase;
 
   /* The most recently attempted route. */
@@ -79,12 +79,12 @@ public final class RouteSelector {
   private final List<Route> postponedRoutes;
 
   public RouteSelector(Address address, URI uri, ProxySelector proxySelector, ConnectionPool pool,
-      Dns dns, RouteDatabase routeDatabase) {
+      HostResolver hostResolver, RouteDatabase routeDatabase) {
     this.address = address;
     this.uri = uri;
     this.proxySelector = proxySelector;
     this.pool = pool;
-    this.dns = dns;
+    this.hostResolver = hostResolver;
     this.routeDatabase = routeDatabase;
     this.postponedRoutes = new LinkedList<Route>();
 
@@ -229,7 +229,7 @@ public final class RouteSelector {
     }
 
     // Try each address for best behavior in mixed IPv4/IPv6 environments.
-    socketAddresses = dns.getAllByName(socketHost);
+    socketAddresses = hostResolver.getAllByName(socketHost);
     nextSocketAddressIndex = 0;
   }
 
