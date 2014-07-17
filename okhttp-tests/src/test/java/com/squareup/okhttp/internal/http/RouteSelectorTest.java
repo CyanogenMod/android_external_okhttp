@@ -18,10 +18,10 @@ package com.squareup.okhttp.internal.http;
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.ConnectionPool;
+import com.squareup.okhttp.HostResolver;
 import com.squareup.okhttp.OkAuthenticator;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.RouteDatabase;
-import com.squareup.okhttp.internal.Dns;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -423,7 +423,7 @@ public final class RouteSelectorTest {
     }
   }
 
-  private static class FakeDns implements Dns {
+  private static class FakeDns implements HostResolver {
     List<String> requestedHosts = new ArrayList<String>();
     InetAddress[] inetAddresses;
 
