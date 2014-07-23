@@ -45,6 +45,7 @@ import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.ResponseCache;
+import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 import java.net.URI;
@@ -66,6 +67,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
+import javax.net.SocketFactory;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLException;
@@ -704,6 +706,48 @@ public final class URLConnectionTest {
     server.play();
 
     assertContent("abc", client.open(server.getUrl("/")));
+  }
+
+  public void testConnectViaSocketFactory(boolean useHttps) throws IOException {
+    SocketFactory uselessSocketFactory = new SocketFactory() {
+      public Socket createSocket() { throw new IllegalArgumentException("useless"); }
+      public Socket createSocket(InetAddress host, int port) { return null; }
+      public Socket createSocket(InetAddress address, int port, InetAddress localAddress,
+          int localPort) { return null; }
+      public Socket createSocket(String host, int port) { return null; }
+      public Socket createSocket(String host, int port, InetAddress localHost, int localPort) {
+        return null;
+      }
+    };
+
+    if (useHttps) {
+      server.useHttps(sslContext.getSocketFactory(), false);
+      client.setSslSocketFactory(sslContext.getSocketFactory());
+      client.setHostnameVerifier(new RecordingHostnameVerifier());
+    }
+
+    server.enqueue(new MockResponse().setStatus("HTTP/1.1 200 OK"));
+    server.play();
+
+    client.setSocketFactory(uselessSocketFactory);
+    connection = client.open(server.getUrl("/"));
+    try {
+      connection.getResponseCode();
+      fail();
+    } catch (IllegalArgumentException expected) {
+    }
+
+    client.setSocketFactory(SocketFactory.getDefault());
+    connection = client.open(server.getUrl("/"));
+    assertEquals(200, connection.getResponseCode());
+  }
+
+  @Test public void connectHttpViaSocketFactory() throws Exception {
+    testConnectViaSocketFactory(false);
+  }
+
+  @Test public void connectHttpsViaSocketFactory() throws Exception {
+    testConnectViaSocketFactory(true);
   }
 
   @Test public void contentDisagreesWithChunkedHeader() throws IOException {
