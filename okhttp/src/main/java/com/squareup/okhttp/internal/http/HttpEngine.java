@@ -20,6 +20,7 @@ package com.squareup.okhttp.internal.http;
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.Headers;
+import com.squareup.okhttp.HostResolver;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.OkResponseCache;
 import com.squareup.okhttp.Request;
@@ -27,7 +28,6 @@ import com.squareup.okhttp.Response;
 import com.squareup.okhttp.ResponseSource;
 import com.squareup.okhttp.Route;
 import com.squareup.okhttp.TunnelRequest;
-import com.squareup.okhttp.internal.Dns;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.CacheRequest;
@@ -240,7 +240,7 @@ public class HttpEngine {
           client.getSocketFactory(), sslSocketFactory, hostnameVerifier, client.getAuthenticator(),
           client.getProxy(), client.getProtocols());
       routeSelector = new RouteSelector(address, request.uri(), client.getProxySelector(),
-          client.getConnectionPool(), Dns.DEFAULT, client.getRoutesDatabase());
+          client.getConnectionPool(), client.getHostResolver(), client.getRoutesDatabase());
     }
 
     connection = routeSelector.next(request.method());

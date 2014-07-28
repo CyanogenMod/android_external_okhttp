@@ -66,6 +66,7 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
   private HostnameVerifier hostnameVerifier;
   private OkAuthenticator authenticator;
   private ConnectionPool connectionPool;
+  private HostResolver hostResolver;
   private boolean followProtocolRedirects = true;
   private int connectTimeout;
   private int readTimeout;
@@ -382,6 +383,19 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
     return protocols;
   }
 
+  /*
+   * Sets the {@code HostResolver} that will be used by this client to resolve
+   * hostnames to IP addresses.
+   */
+  public OkHttpClient setHostResolver(HostResolver hostResolver) {
+    this.hostResolver = hostResolver;
+    return this;
+  }
+
+  public HostResolver getHostResolver() {
+    return hostResolver;
+  }
+
   /**
    * Invokes {@code request} immediately, and blocks until the response can be
    * processed or is in error.
@@ -490,6 +504,9 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
     }
     if (result.protocols == null) {
       result.protocols = Protocol.HTTP2_SPDY3_AND_HTTP;
+    }
+    if (result.hostResolver == null) {
+      result.hostResolver = HostResolver.DEFAULT;
     }
     return result;
   }
