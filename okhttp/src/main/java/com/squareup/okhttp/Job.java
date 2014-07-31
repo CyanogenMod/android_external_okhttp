@@ -117,7 +117,7 @@ final class Job extends NamedRunnable {
     }
 
     // Create the initial HTTP engine. Retries and redirects need new engine for each attempt.
-    engine = new HttpEngine(client, request, false, null, null, null);
+    engine = new HttpEngine(client, request, false, null, null, null, null);
 
     while (true) {
       if (canceled) return null;
@@ -150,7 +150,7 @@ final class Job extends NamedRunnable {
         engine.releaseConnection();
         return response.newBuilder()
             .body(new RealResponseBody(response, engine.getResponseBody()))
-            .redirectedBy(redirectedBy)
+            .priorResponse(redirectedBy)
             .build();
       }
 
@@ -159,9 +159,9 @@ final class Job extends NamedRunnable {
       }
 
       Connection connection = engine.close();
-      redirectedBy = response.newBuilder().redirectedBy(redirectedBy).build(); // Chained.
+      redirectedBy = response.newBuilder().priorResponse(redirectedBy).build(); // Chained.
       request = redirect;
-      engine = new HttpEngine(client, request, false, connection, null, null);
+      engine = new HttpEngine(client, request, false, connection, null, null, null);
     }
   }
 
