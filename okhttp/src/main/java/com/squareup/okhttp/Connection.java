@@ -225,7 +225,7 @@ public final class Connection implements Closeable {
   }
 
   @Override public void close() throws IOException {
-    socket.close();
+    if (socket != null) socket.close();
   }
 
   /** Returns the route used by this connection. */
