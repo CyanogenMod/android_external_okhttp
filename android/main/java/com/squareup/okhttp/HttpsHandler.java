@@ -43,7 +43,9 @@ public final class HttpsHandler extends HttpHandler {
      * Android.
      */
     public static OkHttpClient createHttpsOkHttpClient(Proxy proxy) {
+        // The HTTPS OkHttpClient is an HTTP OkHttpClient with extra configuration.
         OkHttpClient client = HttpHandler.createHttpOkHttpClient(proxy);
+
         client.setProtocols(ENABLED_PROTOCOLS);
 
         HostnameVerifier verifier = HttpsURLConnection.getDefaultHostnameVerifier();
@@ -56,12 +58,6 @@ public final class HttpsHandler extends HttpHandler {
         // HttpsURLConnection.setDefaultSSLSocketFactory().
         // See https://github.com/square/okhttp/issues/184 for details.
         client.setSslSocketFactory(HttpsURLConnection.getDefaultSSLSocketFactory());
-
-        // Explicitly set the response cache.
-        ResponseCache responseCache = ResponseCache.getDefault();
-        if (responseCache != null) {
-            client.setResponseCache(responseCache);
-        }
 
         return client;
     }
