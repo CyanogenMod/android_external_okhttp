@@ -35,7 +35,15 @@ public final class HttpsHandler extends HttpHandler {
 
     @Override
     protected OkHttpClient newOkHttpClient(Proxy proxy) {
-        OkHttpClient client = super.newOkHttpClient(proxy);
+        return createHttpsOkHttpClient(proxy);
+    }
+
+    /**
+     * Creates an OkHttpClient suitable for creating {@link HttpsURLConnection} instances on
+     * Android.
+     */
+    public static OkHttpClient createHttpsOkHttpClient(Proxy proxy) {
+        OkHttpClient client = HttpHandler.createHttpOkHttpClient(proxy);
         client.setProtocols(ENABLED_PROTOCOLS);
 
         HostnameVerifier verifier = HttpsURLConnection.getDefaultHostnameVerifier();

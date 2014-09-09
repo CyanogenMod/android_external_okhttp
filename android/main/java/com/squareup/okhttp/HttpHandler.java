@@ -41,6 +41,14 @@ public class HttpHandler extends URLStreamHandler {
     }
 
     protected OkHttpClient newOkHttpClient(Proxy proxy) {
+        return createHttpOkHttpClient(proxy);
+    }
+
+    /**
+     * Creates an OkHttpClient suitable for creating {@link java.net.HttpURLConnection} instances on
+     * Android.
+     */
+    public static OkHttpClient createHttpOkHttpClient(Proxy proxy) {
         OkHttpClient client = new OkHttpClient();
         client.setFollowProtocolRedirects(false);
         if (proxy != null) {
@@ -50,7 +58,7 @@ public class HttpHandler extends URLStreamHandler {
         // Explicitly set the response cache.
         ResponseCache responseCache = ResponseCache.getDefault();
         if (responseCache != null) {
-          client.setResponseCache(responseCache);
+            client.setResponseCache(responseCache);
         }
         return client;
     }
