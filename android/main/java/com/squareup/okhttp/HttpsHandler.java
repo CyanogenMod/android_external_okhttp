@@ -18,7 +18,6 @@
 package com.squareup.okhttp;
 
 import java.net.Proxy;
-import java.net.ResponseCache;
 import java.util.Arrays;
 import java.util.List;
 
@@ -28,6 +27,8 @@ import javax.net.ssl.HttpsURLConnection;
 
 public final class HttpsHandler extends HttpHandler {
     private static final List<Protocol> ENABLED_PROTOCOLS = Arrays.asList(Protocol.HTTP_11);
+    private final ConfigAwareConnectionPool configAwareConnectionPool =
+            ConfigAwareConnectionPool.getInstance();
 
     @Override protected int getDefaultPort() {
         return 443;
@@ -35,7 +36,9 @@ public final class HttpsHandler extends HttpHandler {
 
     @Override
     protected OkHttpClient newOkHttpClient(Proxy proxy) {
-        return createHttpsOkHttpClient(proxy);
+        OkHttpClient okHttpClient = createHttpsOkHttpClient(proxy);
+        okHttpClient.setConnectionPool(configAwareConnectionPool.get());
+        return okHttpClient;
     }
 
     /**
