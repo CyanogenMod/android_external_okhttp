@@ -23,11 +23,11 @@ import java.net.ResponseCache;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
-import libcore.net.event.NetworkEventDispatcher;
-import libcore.net.event.NetworkEventListener;
 
 public class HttpHandler extends URLStreamHandler {
-    private static ConnectionPool connectionPool;
+
+    private final ConfigAwareConnectionPool configAwareConnectionPool =
+            ConfigAwareConnectionPool.getInstance();
 
     @Override protected URLConnection openConnection(URL url) throws IOException {
         return newOkHttpClient(null /* proxy */).open(url);
@@ -45,7 +45,9 @@ public class HttpHandler extends URLStreamHandler {
     }
 
     protected OkHttpClient newOkHttpClient(Proxy proxy) {
-        return createHttpOkHttpClient(proxy);
+        OkHttpClient okHttpClient = createHttpOkHttpClient(proxy);
+        okHttpClient.setConnectionPool(configAwareConnectionPool.get());
+        return okHttpClient;
     }
 
     /**
@@ -65,24 +67,7 @@ public class HttpHandler extends URLStreamHandler {
             client.setResponseCache(responseCache);
         }
 
-        client.setConnectionPool(getConnectionPool());
         return client;
-    }
-
-    private static synchronized ConnectionPool getConnectionPool() {
-        if (connectionPool == null) {
-            // We assume the default com.android.okhttp.ConnectionPool instance is only used by
-            // us.
-            final ConnectionPool defaultInstance = ConnectionPool.getDefault();
-            NetworkEventDispatcher.getInstance().addListener(new NetworkEventListener() {
-                @Override
-                public void onNetworkConfigurationChanged() {
-                    defaultInstance.evictAll();
-                }
-            });
-            connectionPool = defaultInstance;
-        }
-        return connectionPool;
     }
 
 }
