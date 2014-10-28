@@ -85,8 +85,8 @@ public final class ConnectionPoolTest {
     spdySocketAddress = new InetSocketAddress(InetAddress.getByName(spdyServer.getHostName()),
         spdyServer.getPort());
 
-    Route httpRoute = new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true);
-    Route spdyRoute = new Route(spdyAddress, Proxy.NO_PROXY, spdySocketAddress, true);
+    Route httpRoute = new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress);
+    Route spdyRoute = new Route(spdyAddress, Proxy.NO_PROXY, spdySocketAddress);
     pool = new ConnectionPool(poolSize, KEEP_ALIVE_DURATION_MS);
     httpA = new Connection(pool, httpRoute);
     httpA.connect(200, 200, null);
@@ -131,8 +131,7 @@ public final class ConnectionPoolTest {
     Connection connection = pool.get(httpAddress);
     assertNull(connection);
 
-    connection = new Connection(
-        pool, new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress, true));
+    connection = new Connection(pool, new Route(httpAddress, Proxy.NO_PROXY, httpSocketAddress));
     connection.connect(200, 200, null);
     connection.setOwner(owner);
     assertEquals(0, pool.getConnectionCount());
