@@ -2937,6 +2937,39 @@ public final class URLConnectionTest {
   }
 
   /**
+   * Tolerate bad https proxy response when using HttpResponseCache. Android bug 6754912.
+   */
+  @Test
+  public void testConnectViaHttpProxyToHttpsUsingBadProxyAndHttpResponseCache() throws Exception {
+    initResponseCache();
+
+    server.useHttps(sslContext.getSocketFactory(), true);
+    // The inclusion of a body in the response to a CONNECT is key to reproducing b/6754912.
+    MockResponse
+        badProxyResponse = new MockResponse()
+        .setSocketPolicy(SocketPolicy.UPGRADE_TO_SSL_AT_END)
+        .clearHeaders()
+        .setBody("bogus proxy connect response content");
+
+    server.enqueue(badProxyResponse);
+    server.enqueue(new MockResponse().setBody("response"));
+
+    server.play();
+
+    URL url = new URL("https://android.com/foo");
+    client.setSslSocketFactory(sslContext.getSocketFactory());
+    client.setHostnameVerifier(new RecordingHostnameVerifier());
+
+    ProxyConfig proxyConfig = ProxyConfig.PROXY_SYSTEM_PROPERTY;
+    HttpsURLConnection connection = (HttpsURLConnection) proxyConfig.connect(server, client, url);
+    assertContent("response", connection);
+
+    RecordedRequest connect = server.takeRequest();
+    assertEquals("CONNECT android.com:443 HTTP/1.1", connect.getRequestLine());
+    assertContains(connect.getHeaders(), "Host: android.com");
+  }
+
+  /**
    * The RFC is unclear in this regard as it only specifies that this should
    * invalidate the cache entry (if any).
    */
