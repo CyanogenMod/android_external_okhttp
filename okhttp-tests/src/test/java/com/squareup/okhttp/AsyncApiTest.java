@@ -30,6 +30,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -116,12 +117,19 @@ public final class AsyncApiTest {
   }
 
   @Test public void recoverFromTlsHandshakeFailure() throws Exception {
-    server.useHttps(sslContext.getSocketFactory(), false);
+    // Android now disables SSLv3 by default. To test fallback we re-enable it for the server. This
+    // can be removed once OkHttp is updated to support other fallback protocols.
+    SSLSocketFactory serverSocketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
+    server.useHttps(serverSocketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.enqueue(new MockResponse().setBody("abc"));
     server.play();
 
-    client.setSslSocketFactory(sslContext.getSocketFactory());
+    final boolean disableTlsFallbackScsv = true;
+    SSLSocketFactory clientSocketFactory =
+        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
+    client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
 
     Request request = new Request.Builder()

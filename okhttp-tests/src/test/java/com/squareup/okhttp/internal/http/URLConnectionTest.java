@@ -18,10 +18,12 @@ package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.ConnectionPool;
 import com.squareup.okhttp.HttpResponseCache;
+import com.squareup.okhttp.LimitedProtocolsSocketFactory;
 import com.squareup.okhttp.OkAuthenticator.Challenge;
 import com.squareup.okhttp.OkAuthenticator.Credential;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Protocol;
+import com.squareup.okhttp.FallbackTestClientSocketFactory;
 import com.squareup.okhttp.internal.RecordingAuthenticator;
 import com.squareup.okhttp.internal.RecordingHostnameVerifier;
 import com.squareup.okhttp.internal.RecordingOkAuthenticator;
@@ -105,6 +107,7 @@ public final class URLConnectionTest {
 
   private MockWebServer server = new MockWebServer();
   private MockWebServer server2 = new MockWebServer();
+  private SSLSocketFactory fallbackServerSocketFactory;
 
   private final OkHttpClient client = new OkHttpClient();
   private HttpURLConnection connection;
@@ -114,6 +117,11 @@ public final class URLConnectionTest {
   @Before public void setUp() throws Exception {
     hostName = server.getHostName();
     server.setNpnEnabled(false);
+
+    // Android now disables SSLv3 by default. To test fallback we re-enable it for the server. This
+    // can be removed once OkHttp is updated to support other fallback protocols.
+    fallbackServerSocketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
   }
 
   @After public void tearDown() throws Exception {
@@ -613,23 +621,14 @@ public final class URLConnectionTest {
   }
 
   @Test public void connectViaHttpsWithSSLFallback() throws IOException, InterruptedException {
-    // Android-specific changes below related to http://b/17750026
-    // Android's server sockets will fail the handshake if the client sets TLS_FALLBACK_SCSV,
-    // attempts a retry over SSLv3 and the server has newer protocols enabled. It is not
-    // possible to turn TLS_FALLBACK_SCSV behavior off on the server so we fail the first connection
-    // by simulating a handshake failure and we set the server to only accept the SSLv3
-    // protocol (satisfying the TLS_FALLBACK_SCSV check for the second connection). This is as close
-    // as we can get to simulating a server that fails TLSv1.X and which also does not support
-    // TLS_FALLBACK_SCSV.
-    SSLSocketFactory serverSocketFactory =
-        new LimitedProtocolsSocketFactory(sslContext.getSocketFactory(), "SSLv3");
-    server.useHttps(serverSocketFactory, false);
+    server.useHttps(fallbackServerSocketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.enqueue(new MockResponse().setBody("this response comes via SSL"));
     server.play();
 
-    RecordingSocketFactory clientSocketFactory =
-        new RecordingSocketFactory(sslContext.getSocketFactory());
+    final boolean disableTlsFallbackScsv = true;
+    FallbackTestClientSocketFactory clientSocketFactory =
+        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
     client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
     connection = client.open(server.getUrl("/foo"));
@@ -643,30 +642,41 @@ public final class URLConnectionTest {
     assertEquals(2, clientSocketFactory.getCreatedSockets().size());
   }
 
-  // Android-specific changes below related to http://b/17750026
   // After the introduction of the TLS_FALLBACK_SCSV we expect a failure if the initial
   // handshake fails and the server supports TLS_FALLBACK_SCSV. MockWebServer on Android uses
   // sockets that enforced TLS_FALLBACK_SCSV checks by default.
   @Test public void connectViaHttpsWithSSLFallback_scsvFailure() throws Exception {
-    server.useHttps(sslContext.getSocketFactory(), false);
+    SSLSocketFactory serverSocketFactory = sslContext.getSocketFactory();
+    SSLSocket socket = (SSLSocket) serverSocketFactory.createSocket();
+    boolean tlsFallbackScsvSupported = Arrays.asList(socket.getSupportedCipherSuites())
+        .contains(FallbackTestClientSocketFactory.TLS_FALLBACK_SCSV);
+    socket.close();
+    if (!tlsFallbackScsvSupported) {
+      // SCSV not supported on this platform. Skip this test.
+      return;
+    }
+
+    server.useHttps(fallbackServerSocketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.play();
 
-    RecordingSocketFactory clientSocketFactory =
-        new RecordingSocketFactory(sslContext.getSocketFactory());
+    final boolean disableTlsFallbackScsv = false;
+    FallbackTestClientSocketFactory clientSocketFactory =
+        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
     client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
     try {
-        connection = client.open(server.getUrl("/foo"));
-        connection.getInputStream();
-        fail();
+      connection = client.open(server.getUrl("/foo"));
+      connection.getInputStream();
+      fail();
     } catch (SSLHandshakeException expected) {
     }
 
-    // The first request is registered by MockWebServer and intentionally failed. The second is
-    // failed by the socket layer.
+    // The first request is handled by MockWebServer and intentionally failed.
     assertEquals(1, server.getRequestCount());
-    assertEquals(2, clientSocketFactory.getCreatedSockets().size());
+    // We assume there will be at least one fallback attempt. The number depends on the fallback
+    // protocols attempted and the protocols available on the test platform.
+    assertTrue(clientSocketFactory.getCreatedSockets().size() > 1);
   }
 
   /**
@@ -676,7 +686,7 @@ public final class URLConnectionTest {
    * https://github.com/square/okhttp/issues/515
    */
   @Test public void sslFallbackNotUsedWhenRecycledConnectionFails() throws Exception {
-    server.useHttps(sslContext.getSocketFactory(), false);
+    server.useHttps(fallbackServerSocketFactory, false);
     server.enqueue(new MockResponse()
         .setBody("abc")
         .setSocketPolicy(SocketPolicy.DISCONNECT_AT_END));
@@ -2103,9 +2113,9 @@ public final class URLConnectionTest {
     assertEquals(method + " /page1 HTTP/1.1", page1.getRequestLine());
 
     if (method.equals("GET")) {
-        assertEquals("Page 2", response);
-    } else if (method.equals("HEAD"))  {
-        assertEquals("", response);
+      assertEquals("Page 2", response);
+    } else if (method.equals("HEAD")) {
+      assertEquals("", response);
     } else {
       // Methods other than GET/HEAD shouldn't follow the redirect
       if (method.equals("POST")) {
@@ -2779,7 +2789,8 @@ public final class URLConnectionTest {
     assertEquals(Proxy.NO_PROXY, authenticator.onlyProxy());
     URL url = authenticator.onlyUrl();
     assertEquals("/private", url.getPath());
-    assertEquals(Arrays.asList(new Challenge("Basic", "protected area")), authenticator.onlyChallenge());
+    assertEquals(Arrays.asList(new Challenge("Basic", "protected area")),
+        authenticator.onlyChallenge());
   }
 
   @Test public void npnSetsProtocolHeader_SPDY_3() throws Exception {
@@ -3042,6 +3053,7 @@ public final class URLConnectionTest {
           throws IOException {
         response.setChunkedBody(content, chunkSize);
       }
+
       @Override void setForRequest(HttpURLConnection connection, int contentLength) {
         connection.setChunkedStreamingMode(5);
       }
@@ -3050,6 +3062,7 @@ public final class URLConnectionTest {
       @Override void setBody(MockResponse response, byte[] content, int chunkSize) {
         response.setBody(content);
       }
+
       @Override void setForRequest(HttpURLConnection connection, int contentLength) {
         connection.setFixedLengthStreamingMode(contentLength);
       }
@@ -3176,180 +3189,5 @@ public final class URLConnectionTest {
     server.useHttps(sslContext.getSocketFactory(), false);
     server.setNpnEnabled(true);
     server.setNpnProtocols(client.getProtocols());
-  }
-
-  /**
-   * An {@link SSLSocketFactory} that delegates all method calls.
-   */
-  private static abstract class DelegatingSSLSocketFactory extends SSLSocketFactory {
-
-    private final SSLSocketFactory delegate;
-
-    public DelegatingSSLSocketFactory(SSLSocketFactory delegate) {
-      this.delegate = delegate;
-    }
-
-    @Override
-    public String[] getDefaultCipherSuites() {
-      return delegate.getDefaultCipherSuites();
-    }
-
-    @Override
-    public String[] getSupportedCipherSuites() {
-      return delegate.getSupportedCipherSuites();
-    }
-
-    @Override
-    public SSLSocket createSocket(Socket s, String host, int port, boolean autoClose)
-        throws IOException {
-      return (SSLSocket) delegate.createSocket(s, host, port, autoClose);
-    }
-
-    @Override
-    public SSLSocket createSocket() throws IOException {
-      return (SSLSocket) delegate.createSocket();
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port) throws IOException, UnknownHostException {
-      return (SSLSocket) delegate.createSocket(host, port);
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port, InetAddress localHost,
-        int localPort) throws IOException, UnknownHostException {
-      return (SSLSocket) delegate.createSocket(host, port, localHost, localPort);
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress host, int port) throws IOException {
-      return (SSLSocket) delegate.createSocket(host, port);
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress address, int port,
-        InetAddress localAddress, int localPort) throws IOException {
-      return (SSLSocket) delegate.createSocket(address, port, localAddress, localPort);
-    }
-  }
-
-  /**
-   * An {@link SSLSocketFactory} that creates sockets using a delegate, but overrides the enabled
-   * protocols for any created sockets.
-   */
-  private static class LimitedProtocolsSocketFactory extends DelegatingSSLSocketFactory {
-
-    private final String[] enabledProtocols;
-
-    public LimitedProtocolsSocketFactory(SSLSocketFactory delegate, String... enabledProtocols) {
-      super(delegate);
-      this.enabledProtocols = enabledProtocols;
-    }
-
-    @Override
-    public SSLSocket createSocket(Socket s, String host, int port, boolean autoClose)
-        throws IOException {
-      SSLSocket socket = super.createSocket(s, host, port, autoClose);
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket() throws IOException {
-      SSLSocket socket = super.createSocket();
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port) throws IOException, UnknownHostException {
-      SSLSocket socket = super.createSocket(host, port);
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port, InetAddress localHost, int localPort)
-        throws IOException, UnknownHostException {
-      SSLSocket socket = super.createSocket(host, port, localHost, localPort);
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress host, int port) throws IOException {
-      SSLSocket socket = super.createSocket(host, port);
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress address, int port, InetAddress localAddress,
-        int localPort) throws IOException {
-      SSLSocket socket = super.createSocket(address, port, localAddress, localPort);
-      socket.setEnabledProtocols(enabledProtocols);
-      return socket;
-    }
-  }
-
-  /**
-   * An SSLSocketFactory that delegates calls and keeps a record of any sockets created.
-   */
-  private static class RecordingSocketFactory extends DelegatingSSLSocketFactory {
-
-    private final List<SSLSocket> createdSockets = new ArrayList<SSLSocket>();
-
-    public RecordingSocketFactory(SSLSocketFactory delegate) {
-      super(delegate);
-    }
-
-    @Override
-    public SSLSocket createSocket(Socket s, String host, int port, boolean autoClose)
-        throws IOException {
-      SSLSocket socket = super.createSocket(s, host, port, autoClose);
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket() throws IOException {
-      SSLSocket socket = super.createSocket();
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port) throws IOException, UnknownHostException {
-      SSLSocket socket = super.createSocket(host, port);
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(String host, int port, InetAddress localHost,
-        int localPort) throws IOException, UnknownHostException {
-      SSLSocket socket = super.createSocket(host, port, localHost, localPort);
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress host, int port) throws IOException {
-      SSLSocket socket = super.createSocket(host, port);
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    @Override
-    public SSLSocket createSocket(InetAddress address, int port,
-        InetAddress localAddress, int localPort) throws IOException {
-      SSLSocket socket = super.createSocket(address, port, localAddress, localPort);
-      createdSockets.add(socket);
-      return socket;
-    }
-
-    public List<SSLSocket> getCreatedSockets() {
-      return createdSockets;
-    }
   }
 }
