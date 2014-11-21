@@ -17,6 +17,7 @@
 package com.squareup.okhttp.internal;
 
 import com.squareup.okhttp.Protocol;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.Constructor;
@@ -93,20 +94,7 @@ public class Platform {
     return url.toURI(); // this isn't as good as the built-in toUriLenient
   }
 
-  /**
-   * Attempt a TLS connection with useful extensions enabled. This mode
-   * supports more features, but is less likely to be compatible with older
-   * HTTPS servers.
-   */
-  public void enableTlsExtensions(SSLSocket socket, String uriHost) {
-  }
-
-  /**
-   * Attempt a secure connection with basic functionality to maximize
-   * compatibility. Currently this uses SSL 3.0.
-   */
-  public void supportTlsIntolerantServer(SSLSocket socket) {
-    socket.setEnabledProtocols(new String[] {"SSLv3"});
+  public void configureSecureSocket(SSLSocket socket, String uriHost, boolean isFallback) {
   }
 
   /** Returns the negotiated protocol, or null if no protocol was negotiated. */
@@ -243,8 +231,10 @@ public class Platform {
       }
     }
 
-    @Override public void enableTlsExtensions(SSLSocket socket, String uriHost) {
-      super.enableTlsExtensions(socket, uriHost);
+    @Override public void configureSecureSocket(SSLSocket socket, String uriHost,
+        boolean isFallback) {
+
+      super.configureSecureSocket(socket, uriHost, isFallback);
       if (!openSslSocketClass.isInstance(socket)) return;
       try {
         setUseSessionTickets.invoke(socket, true);

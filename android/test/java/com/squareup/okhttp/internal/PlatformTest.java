@@ -47,10 +47,10 @@ public class PlatformTest {
 
     // Expect no error
     TestSSLSocketImpl arbitrarySocketImpl = new TestSSLSocketImpl();
-    platform.enableTlsExtensions(arbitrarySocketImpl, "host");
+    platform.configureSecureSocket(arbitrarySocketImpl, "host", false);
 
     FullOpenSSLSocketImpl openSslSocket = new FullOpenSSLSocketImpl();
-    platform.enableTlsExtensions(openSslSocket, "host");
+    platform.configureSecureSocket(openSslSocket, "host", false);
     assertTrue(openSslSocket.useSessionTickets);
     assertEquals("host", openSslSocket.hostname);
   }
