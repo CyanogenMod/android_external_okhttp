@@ -108,18 +108,16 @@ public final class SyncApiTest {
   }
 
   @Test public void recoverFromTlsHandshakeFailure() throws Exception {
-    // Android now disables SSLv3 by default. To test fallback we re-enable it for the server. This
-    // can be removed once OkHttp is updated to support other fallback protocols.
-    SSLSocketFactory serverSocketFactory = new LimitedProtocolsSocketFactory(
+    SSLSocketFactory socketFactory = new LimitedProtocolsSocketFactory(
         sslContext.getSocketFactory(), "TLSv1", "SSLv3");
-    server.useHttps(serverSocketFactory, false);
+    server.useHttps(socketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.enqueue(new MockResponse().setBody("abc"));
     server.play();
 
     final boolean disableTlsFallbackScsv = true;
     SSLSocketFactory clientSocketFactory =
-        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
+        new FallbackTestClientSocketFactory(socketFactory, disableTlsFallbackScsv);
     client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
 
