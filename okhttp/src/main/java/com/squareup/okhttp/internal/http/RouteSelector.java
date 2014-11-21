@@ -33,23 +33,14 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.NoSuchElementException;
-import javax.net.ssl.SSLHandshakeException;
-import javax.net.ssl.SSLProtocolException;
 
 import static com.squareup.okhttp.internal.Util.getEffectivePort;
 
 /**
  * Selects routes to connect to an origin server. Each connection requires a
- * choice of proxy server, IP address, and TLS mode. Connections may also be
- * recycled.
+ * choice of proxy server and IP address. Connections may also be recycled.
  */
 public final class RouteSelector {
-  /** Uses {@link com.squareup.okhttp.internal.Platform#enableTlsExtensions}. */
-  private static final int TLS_MODE_MODERN = 1;
-  /** Uses {@link com.squareup.okhttp.internal.Platform#supportTlsIntolerantServer}. */
-  private static final int TLS_MODE_COMPATIBLE = 0;
-  /** No TLS mode. */
-  private static final int TLS_MODE_NULL = -1;
 
   private final Address address;
   private final URI uri;
@@ -72,9 +63,6 @@ public final class RouteSelector {
   private int nextSocketAddressIndex;
   private int socketPort;
 
-  /* State for negotiating the next TLS configuration */
-  private int nextTlsMode = TLS_MODE_NULL;
-
   /* State for negotiating failed routes */
   private final List<Route> postponedRoutes;
 
@@ -96,7 +84,7 @@ public final class RouteSelector {
    * least one route.
    */
   public boolean hasNext() {
-    return hasNextTlsMode() || hasNextInetSocketAddress() || hasNextProxy() || hasNextPostponed();
+    return hasNextInetSocketAddress() || hasNextProxy() || hasNextPostponed();
   }
 
   /**
@@ -112,23 +100,19 @@ public final class RouteSelector {
     }
 
     // Compute the next route to attempt.
-    if (!hasNextTlsMode()) {
-      if (!hasNextInetSocketAddress()) {
-        if (!hasNextProxy()) {
-          if (!hasNextPostponed()) {
-            throw new NoSuchElementException();
-          }
-          return new Connection(pool, nextPostponed());
+    if (!hasNextInetSocketAddress()) {
+      if (!hasNextProxy()) {
+        if (!hasNextPostponed()) {
+          throw new NoSuchElementException();
         }
-        lastProxy = nextProxy();
-        resetNextInetSocketAddress(lastProxy);
+        return new Connection(pool, nextPostponed());
       }
-      lastInetSocketAddress = nextInetSocketAddress();
-      resetNextTlsMode();
+      lastProxy = nextProxy();
+      resetNextInetSocketAddress(lastProxy);
     }
+    lastInetSocketAddress = nextInetSocketAddress();
 
-    boolean modernTls = nextTlsMode() == TLS_MODE_MODERN;
-    Route route = new Route(address, lastProxy, lastInetSocketAddress, modernTls);
+    Route route = new Route(address, lastProxy, lastInetSocketAddress);
     if (routeDatabase.shouldPostpone(route)) {
       postponedRoutes.add(route);
       // We will only recurse in order to skip previously failed routes. They will be
@@ -154,17 +138,6 @@ public final class RouteSelector {
     }
 
     routeDatabase.failed(failedRoute);
-
-    // If the previously returned route's problem was not related to TLS, and
-    // the next route only changes the TLS mode, we shouldn't even attempt it.
-    // This suppresses it in both this selector and also in the route database.
-    if (hasNextTlsMode()
-        && !(failure instanceof SSLHandshakeException)
-        && !(failure instanceof SSLProtocolException)) {
-      boolean modernTls = nextTlsMode() == TLS_MODE_MODERN;
-      Route routeToSuppress = new Route(address, lastProxy, lastInetSocketAddress, modernTls);
-      routeDatabase.failed(routeToSuppress);
-    }
   }
 
   /** Resets {@link #nextProxy} to the first option. */
@@ -248,29 +221,6 @@ public final class RouteSelector {
     }
 
     return result;
-  }
-
-  /** Resets {@link #nextTlsMode} to the first option. */
-  private void resetNextTlsMode() {
-    nextTlsMode = (address.getSslSocketFactory() != null) ? TLS_MODE_MODERN : TLS_MODE_COMPATIBLE;
-  }
-
-  /** Returns true if there's another TLS mode to try. */
-  private boolean hasNextTlsMode() {
-    return nextTlsMode != TLS_MODE_NULL;
-  }
-
-  /** Returns the next TLS mode to try. */
-  private int nextTlsMode() {
-    if (nextTlsMode == TLS_MODE_MODERN) {
-      nextTlsMode = TLS_MODE_COMPATIBLE;
-      return TLS_MODE_MODERN;
-    } else if (nextTlsMode == TLS_MODE_COMPATIBLE) {
-      nextTlsMode = TLS_MODE_NULL;  // So that hasNextTlsMode() returns false.
-      return TLS_MODE_COMPATIBLE;
-    } else {
-      throw new AssertionError();
-    }
   }
 
   /** Returns true if there is another postponed route to try. */

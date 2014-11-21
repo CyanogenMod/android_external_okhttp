@@ -20,7 +20,6 @@ package com.squareup.okhttp.internal.http;
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.Headers;
-import com.squareup.okhttp.HostResolver;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.OkResponseCache;
 import com.squareup.okhttp.Request;

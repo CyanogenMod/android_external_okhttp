@@ -107,7 +107,6 @@ public final class URLConnectionTest {
 
   private MockWebServer server = new MockWebServer();
   private MockWebServer server2 = new MockWebServer();
-  private SSLSocketFactory fallbackServerSocketFactory;
 
   private final OkHttpClient client = new OkHttpClient();
   private HttpURLConnection connection;
@@ -117,11 +116,6 @@ public final class URLConnectionTest {
   @Before public void setUp() throws Exception {
     hostName = server.getHostName();
     server.setNpnEnabled(false);
-
-    // Android now disables SSLv3 by default. To test fallback we re-enable it for the server. This
-    // can be removed once OkHttp is updated to support other fallback protocols.
-    fallbackServerSocketFactory = new LimitedProtocolsSocketFactory(
-        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
   }
 
   @After public void tearDown() throws Exception {
@@ -620,15 +614,18 @@ public final class URLConnectionTest {
     }
   }
 
-  @Test public void connectViaHttpsWithSSLFallback() throws IOException, InterruptedException {
-    server.useHttps(fallbackServerSocketFactory, false);
+  @Test public void connectViaHttpsWithSSLFallback() throws Exception {
+    SSLSocketFactory socketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
+
+    server.useHttps(socketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.enqueue(new MockResponse().setBody("this response comes via SSL"));
     server.play();
 
     final boolean disableTlsFallbackScsv = true;
     FallbackTestClientSocketFactory clientSocketFactory =
-        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
+        new FallbackTestClientSocketFactory(socketFactory, disableTlsFallbackScsv);
     client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
     connection = client.open(server.getUrl("/foo"));
@@ -640,6 +637,69 @@ public final class URLConnectionTest {
     assertEquals("GET /foo HTTP/1.1", request.getRequestLine());
     assertEquals("SSLv3", request.getSslProtocol());
     assertEquals(2, clientSocketFactory.getCreatedSockets().size());
+  }
+
+  @Test public void connectViaHttpsWithSSLFallback_serverDoesNotSupportFallbackProtocol()
+      throws Exception {
+    SSLSocketFactory serverSocketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1");
+    server.useHttps(serverSocketFactory, false);
+    server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
+    server.play();
+
+    final boolean disableTlsFallbackScsv = true;
+    FallbackTestClientSocketFactory clientSocketFactory =
+        new FallbackTestClientSocketFactory(
+            new LimitedProtocolsSocketFactory(sslContext.getSocketFactory(), "TLSv1", "SSLv3"),
+            disableTlsFallbackScsv);
+    client.setSslSocketFactory(clientSocketFactory);
+    client.setHostnameVerifier(new RecordingHostnameVerifier());
+    connection = client.open(server.getUrl("/foo"));
+
+    try {
+      connection = client.open(server.getUrl("/foo"));
+      connection.getInputStream();
+      fail();
+    } catch (SSLHandshakeException expected) {
+    }
+
+    // The first request is handled by MockWebServer and intentionally failed.
+    assertEquals(1, server.getRequestCount());
+    // The client will attempt a fallback connection using SSLv3, but fail because the server does
+    // not support it.
+    assertEquals(2, clientSocketFactory.getCreatedSockets().size());
+  }
+
+  @Test public void connectViaHttpsWithSSLFallback_clientDoesNotSupportFallbackProtocol()
+      throws Exception {
+
+    SSLSocketFactory serverSocketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
+    server.useHttps(serverSocketFactory, false);
+    server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
+    server.play();
+
+    final boolean disableTlsFallbackScsv = true;
+    FallbackTestClientSocketFactory clientSocketFactory =
+        new FallbackTestClientSocketFactory(
+            new LimitedProtocolsSocketFactory(sslContext.getSocketFactory(), "TLSv1"),
+            disableTlsFallbackScsv);
+    client.setSslSocketFactory(clientSocketFactory);
+    client.setHostnameVerifier(new RecordingHostnameVerifier());
+    connection = client.open(server.getUrl("/foo"));
+
+    try {
+      connection = client.open(server.getUrl("/foo"));
+      connection.getInputStream();
+      fail();
+    } catch (SSLHandshakeException expected) {
+    }
+
+    // The first request is handled by MockWebServer and intentionally failed.
+    assertEquals(1, server.getRequestCount());
+    // The client will not attempt a fallback connection if there is no support for the fallback
+    // protocol on the client.
+    assertEquals(1, clientSocketFactory.getCreatedSockets().size());
   }
 
   // After the introduction of the TLS_FALLBACK_SCSV we expect a failure if the initial
@@ -656,13 +716,16 @@ public final class URLConnectionTest {
       return;
     }
 
-    server.useHttps(fallbackServerSocketFactory, false);
+    SSLSocketFactory socketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
+
+    server.useHttps(socketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
     server.play();
 
     final boolean disableTlsFallbackScsv = false;
     FallbackTestClientSocketFactory clientSocketFactory =
-        new FallbackTestClientSocketFactory(sslContext.getSocketFactory(), disableTlsFallbackScsv);
+        new FallbackTestClientSocketFactory(socketFactory, disableTlsFallbackScsv);
     client.setSslSocketFactory(clientSocketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
     try {
@@ -674,9 +737,9 @@ public final class URLConnectionTest {
 
     // The first request is handled by MockWebServer and intentionally failed.
     assertEquals(1, server.getRequestCount());
-    // We assume there will be at least one fallback attempt. The number depends on the fallback
-    // protocols attempted and the protocols available on the test platform.
-    assertTrue(clientSocketFactory.getCreatedSockets().size() > 1);
+    // There will be one fallback attempt with the enabled client protocols. Though supported by the
+    // server it will fail because of the TLS_FALLBACK_SCSV check.
+    assertEquals(2, clientSocketFactory.getCreatedSockets().size());
   }
 
   /**
@@ -686,14 +749,16 @@ public final class URLConnectionTest {
    * https://github.com/square/okhttp/issues/515
    */
   @Test public void sslFallbackNotUsedWhenRecycledConnectionFails() throws Exception {
-    server.useHttps(fallbackServerSocketFactory, false);
+    SSLSocketFactory socketFactory = new LimitedProtocolsSocketFactory(
+        sslContext.getSocketFactory(), "TLSv1", "SSLv3");
+    server.useHttps(socketFactory, false);
     server.enqueue(new MockResponse()
         .setBody("abc")
         .setSocketPolicy(SocketPolicy.DISCONNECT_AT_END));
     server.enqueue(new MockResponse().setBody("def"));
     server.play();
 
-    client.setSslSocketFactory(sslContext.getSocketFactory());
+    client.setSslSocketFactory(socketFactory);
     client.setHostnameVerifier(new RecordingHostnameVerifier());
 
     assertContent("abc", client.open(server.getUrl("/")));

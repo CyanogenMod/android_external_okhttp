@@ -24,6 +24,8 @@ import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.HttpTransport;
 import com.squareup.okhttp.internal.http.OkHeaders;
 import com.squareup.okhttp.internal.http.SpdyTransport;
+import com.squareup.okhttp.internal.TlsConfiguration;
+import com.squareup.okhttp.internal.TlsFallbackStrategy;
 import com.squareup.okhttp.internal.spdy.SpdyConnection;
 import java.io.Closeable;
 import java.io.IOException;
@@ -34,6 +36,7 @@ import okio.ByteString;
 import okio.OkBuffer;
 import okio.Source;
 
+import static com.squareup.okhttp.internal.Util.closeQuietly;
 import static java.net.HttpURLConnection.HTTP_OK;
 import static java.net.HttpURLConnection.HTTP_PROXY_AUTH;
 
@@ -71,6 +74,7 @@ public final class Connection implements Closeable {
   private boolean connected = false;
   private HttpConnection httpConnection;
   private SpdyConnection spdyConnection;
+  private TlsConfiguration tlsConfiguration;
   private int httpMinorVersion = 1; // Assume HTTP/1.1
   private long idleStartTimeNs;
   private Handshake handshake;
@@ -142,28 +146,43 @@ public final class Connection implements Closeable {
       throws IOException {
     if (connected) throw new IllegalStateException("already connected");
 
-    if (route.proxy.type() == Proxy.Type.DIRECT || route.proxy.type() == Proxy.Type.HTTP) {
-      socket = route.address.socketFactory.createSocket();
-    } else {
-      socket = new Socket(route.proxy);
-    }
-
-    socket.setSoTimeout(readTimeout);
-    Platform.get().connectSocket(socket, route.inetSocketAddress, connectTimeout);
-
+    TlsFallbackStrategy tlsFallbackStrategy = null;
     if (route.address.sslSocketFactory != null) {
-      upgradeToTls(tunnelRequest);
-    } else {
-      httpConnection = new HttpConnection(pool, this, socket);
+      tlsFallbackStrategy = TlsFallbackStrategy.create();
     }
-    connected = true;
+
+    while (!connected) {
+      if (route.proxy.type() == Proxy.Type.DIRECT || route.proxy.type() == Proxy.Type.HTTP) {
+        socket = route.address.socketFactory.createSocket();
+      } else {
+        socket = new Socket(route.proxy);
+      }
+
+      socket.setSoTimeout(readTimeout);
+      Platform.get().connectSocket(socket, route.inetSocketAddress, connectTimeout);
+
+      if (tlsFallbackStrategy != null) {
+        boolean success = upgradeToTls(tlsFallbackStrategy, tunnelRequest);
+        if (!success) {
+          continue;
+        }
+      } else {
+        httpConnection = new HttpConnection(pool, this, socket);
+      }
+      connected = true;
+    }
   }
 
   /**
-   * Create an {@code SSLSocket} and perform the TLS handshake and certificate
-   * validation.
+   * Create an {@code SSLSocket} and perform the TLS handshake and certificate validation.
+   *
+   * Returns {@code true} if the connection was successful, {@code false} if the connection was
+   * unsuccessful but should be retried and throws an {@link IOException} if the connection failed
+   * in a non-retryable fashion.
    */
-  private void upgradeToTls(TunnelRequest tunnelRequest) throws IOException {
+  private boolean upgradeToTls(TlsFallbackStrategy tlsFallbackStrategy, TunnelRequest tunnelRequest)
+      throws IOException {
+
     Platform platform = Platform.get();
 
     // Make an SSL Tunnel on the first message pair of each SSL + proxy connection.
@@ -171,56 +190,64 @@ public final class Connection implements Closeable {
       makeTunnel(tunnelRequest);
     }
 
-    // Create the wrapper over connected socket.
-    socket = route.address.sslSocketFactory
-        .createSocket(socket, route.address.uriHost, route.address.uriPort, true /* autoClose */);
-    SSLSocket sslSocket = (SSLSocket) socket;
-    if (route.modernTls) {
-      platform.enableTlsExtensions(sslSocket, route.address.uriHost);
-    } else {
-      platform.supportTlsIntolerantServer(sslSocket);
-    }
+    try {
+      // Create the wrapper over connected socket.
+      socket = route.address.sslSocketFactory
+          .createSocket(socket, route.address.uriHost, route.address.uriPort, true /* autoClose */);
+      SSLSocket sslSocket = (SSLSocket) socket;
 
-    boolean useNpn = false;
-    if (route.modernTls) {
-      boolean http2 = route.address.protocols.contains(Protocol.HTTP_2);
-      boolean spdy3 = route.address.protocols.contains(Protocol.SPDY_3);
-      if (http2 && spdy3) {
-        platform.setNpnProtocols(sslSocket, Protocol.HTTP2_SPDY3_AND_HTTP);
-        useNpn = true;
-      } else if (http2) {
-        platform.setNpnProtocols(sslSocket, Protocol.HTTP2_AND_HTTP_11);
-        useNpn = true;
-      } else if (spdy3) {
-        platform.setNpnProtocols(sslSocket, Protocol.SPDY3_AND_HTTP11);
-        useNpn = true;
+      TlsConfiguration tlsConfiguration =
+          tlsFallbackStrategy.configureSecureSocket(sslSocket, route.address.uriHost, platform);
+      boolean useNpn = tlsConfiguration.supportsNpn();
+      if (useNpn) {
+        boolean http2 = route.address.protocols.contains(Protocol.HTTP_2);
+        boolean spdy3 = route.address.protocols.contains(Protocol.SPDY_3);
+        if (http2 && spdy3) {
+          platform.setNpnProtocols(sslSocket, Protocol.HTTP2_SPDY3_AND_HTTP);
+        } else if (http2) {
+          platform.setNpnProtocols(sslSocket, Protocol.HTTP2_AND_HTTP_11);
+        } else if (spdy3) {
+          platform.setNpnProtocols(sslSocket, Protocol.SPDY3_AND_HTTP11);
+        }
       }
+
+      // Force handshake. This can throw!
+      sslSocket.startHandshake();
+
+      // Verify that the socket's certificates are acceptable for the target host.
+      if (!route.address.hostnameVerifier.verify(route.address.uriHost, sslSocket.getSession())) {
+        throw new IOException("Hostname '" + route.address.uriHost + "' was not verified");
+      }
+
+      handshake = Handshake.get(sslSocket.getSession());
+
+      ByteString maybeProtocol;
+      Protocol selectedProtocol = Protocol.HTTP_11;
+      if (useNpn && (maybeProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
+        selectedProtocol = Protocol.find(maybeProtocol); // Throws IOE on unknown.
+      }
+
+      if (selectedProtocol.spdyVariant) {
+        sslSocket.setSoTimeout(0); // SPDY timeouts are set per-stream.
+        spdyConnection = new SpdyConnection.Builder(route.address.getUriHost(), true, socket)
+            .protocol(selectedProtocol).build();
+        spdyConnection.sendConnectionHeader();
+      } else {
+        httpConnection = new HttpConnection(pool, this, socket);
+      }
+      this.tlsConfiguration = tlsConfiguration;
+    } catch (IOException e){
+      boolean retryConnect = tlsFallbackStrategy.connectionFailed(e);
+      if (retryConnect) {
+        closeQuietly(socket);
+        handshake = null;
+        socket = null;
+        return false;
+      }
+      throw e;
     }
 
-    // Force handshake. This can throw!
-    sslSocket.startHandshake();
-
-    // Verify that the socket's certificates are acceptable for the target host.
-    if (!route.address.hostnameVerifier.verify(route.address.uriHost, sslSocket.getSession())) {
-      throw new IOException("Hostname '" + route.address.uriHost + "' was not verified");
-    }
-
-    handshake = Handshake.get(sslSocket.getSession());
-
-    ByteString maybeProtocol;
-    Protocol selectedProtocol = Protocol.HTTP_11;
-    if (useNpn && (maybeProtocol = platform.getNpnSelectedProtocol(sslSocket)) != null) {
-      selectedProtocol = Protocol.find(maybeProtocol); // Throws IOE on unknown.
-    }
-
-    if (selectedProtocol.spdyVariant) {
-      sslSocket.setSoTimeout(0); // SPDY timeouts are set per-stream.
-      spdyConnection = new SpdyConnection.Builder(route.address.getUriHost(), true, socket)
-          .protocol(selectedProtocol).build();
-      spdyConnection.sendConnectionHeader();
-    } else {
-      httpConnection = new HttpConnection(pool, this, socket);
-    }
+    return true;
   }
 
   /** Returns true if {@link #connect} has been attempted on this connection. */
@@ -235,6 +262,10 @@ public final class Connection implements Closeable {
   /** Returns the route used by this connection. */
   public Route getRoute() {
     return route;
+  }
+
+  public TlsConfiguration getTlsConfiguration() {
+    return tlsConfiguration;
   }
 
   /**
