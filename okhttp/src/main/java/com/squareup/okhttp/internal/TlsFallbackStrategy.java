@@ -37,7 +37,11 @@ public class TlsFallbackStrategy {
 
   /** Create a new {@link TlsFallbackStrategy}. */
   public static TlsFallbackStrategy create() {
-    return new TlsFallbackStrategy(TlsConfiguration.USE_DEFAULT, TlsConfiguration.SSL_V3_ONLY);
+    return new TlsFallbackStrategy(
+        TlsConfiguration.TLS_V1_2_AND_BELOW,
+        TlsConfiguration.TLS_V1_1_AND_BELOW,
+        TlsConfiguration.TLS_V1_0_AND_BELOW,
+        TlsConfiguration.SSL_V3_ONLY);
   }
 
   /** Use {@link #create()} */
