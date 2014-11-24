@@ -35,7 +35,8 @@ import static org.junit.Assert.assertTrue;
 public class TlsFallbackStrategyTest {
 
   private static final SSLContext sslContext = SslContextBuilder.localhost();
-  private static final String[] TLSV1_AND_SSLV3 = new String[] { "SSLv3", "TLSv1" };
+  private static final String[] TLSV11_TLSV10_AND_SSLV3 =
+      new String[] { "TLSv1.1", "TLSv1", "SSLv3" };
   private static final String[] TLSV1_ONLY = new String[] { "TLSv1" };
   public static final SSLHandshakeException RETRYABLE_EXCEPTION = new SSLHandshakeException(
       "Simulated handshake exception");
@@ -51,7 +52,7 @@ public class TlsFallbackStrategyTest {
 
   @Test
   public void nonRetryableIOException() throws Exception {
-    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV1_AND_SSLV3);
+    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
     try {
       fallbackStrategy.configureSecureSocket(supportsSslV3, "host", platform);
 
@@ -64,7 +65,7 @@ public class TlsFallbackStrategyTest {
 
   @Test
   public void nonRetryableSSLHandshakeException() throws Exception {
-    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV1_AND_SSLV3);
+    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
     try {
       fallbackStrategy.configureSecureSocket(supportsSslV3, "host", platform);
 
@@ -80,7 +81,7 @@ public class TlsFallbackStrategyTest {
 
   @Test
   public void retryableSSLHandshakeException() throws Exception {
-    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV1_AND_SSLV3);
+    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
     try {
       fallbackStrategy.configureSecureSocket(supportsSslV3, "host", platform);
 
@@ -92,27 +93,38 @@ public class TlsFallbackStrategyTest {
   }
 
   @Test
-  public void allFallbacksSupported() throws Exception {
-    SSLSocket supportsSslV3 = createSocketWithEnabledProtocols(TLSV1_AND_SSLV3);
+  public void someFallbacksSupported() throws Exception {
+    SSLSocket socket = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
     try {
-      fallbackStrategy.configureSecureSocket(supportsSslV3, "host", platform);
-      assertEnabledProtocols(supportsSslV3, TLSV1_AND_SSLV3);
+      fallbackStrategy.configureSecureSocket(socket, "host", platform);
+      assertEnabledProtocols(socket, TLSV11_TLSV10_AND_SSLV3);
 
       boolean retry = fallbackStrategy.connectionFailed(RETRYABLE_EXCEPTION);
       assertTrue(retry);
     } finally {
-      supportsSslV3.close();
+      socket.close();
     }
 
-    supportsSslV3 = createSocketWithEnabledProtocols(TLSV1_AND_SSLV3);
+    socket = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
     try {
-      fallbackStrategy.configureSecureSocket(supportsSslV3, "host", platform);
-      assertEnabledProtocols(supportsSslV3, "SSLv3");
+      fallbackStrategy.configureSecureSocket(socket, "host", platform);
+      assertEnabledProtocols(socket, "TLSv1", "SSLv3");
+
+      boolean retry = fallbackStrategy.connectionFailed(RETRYABLE_EXCEPTION);
+      assertTrue(retry);
+    } finally {
+      socket.close();
+    }
+
+    socket = createSocketWithEnabledProtocols(TLSV11_TLSV10_AND_SSLV3);
+    try {
+      fallbackStrategy.configureSecureSocket(socket, "host", platform);
+      assertEnabledProtocols(socket, "SSLv3");
 
       boolean retry = fallbackStrategy.connectionFailed(RETRYABLE_EXCEPTION);
       assertFalse(retry);
     } finally {
-      supportsSslV3.close();
+      socket.close();
     }
   }
 
@@ -121,7 +133,6 @@ public class TlsFallbackStrategyTest {
     SSLSocket socket = createSocketWithEnabledProtocols(TLSV1_ONLY);
     try {
       fallbackStrategy.configureSecureSocket(socket, "host", platform);
-
       assertEnabledProtocols(socket, TLSV1_ONLY);
 
       boolean retry = fallbackStrategy.connectionFailed(RETRYABLE_EXCEPTION);
