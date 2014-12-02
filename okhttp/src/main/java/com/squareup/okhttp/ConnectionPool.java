@@ -90,7 +90,7 @@ public class ConnectionPool {
      */
     NORMAL,
     /**
-     * Entered when a pool as been orphaned and is not expected to receive more usage, except for
+     * Entered when a pool has been orphaned and is not expected to receive more usage, except for
      * references held by existing connections. See {@link #enterDrainMode()}.
      * A thread runs periodically to close idle connections in the pool until the pool is empty and
      * then the state moves to {@link #DRAINED}.
@@ -346,7 +346,7 @@ public class ConnectionPool {
     }
   }
 
-  // Callers must synchronize on "this" for the cleanMode check to be reliable.
+  // Callers must synchronize on "this".
   private void scheduleCleanupAsRequired() {
     switch (cleanMode) {
       case NORMAL:
@@ -358,6 +358,7 @@ public class ConnectionPool {
         break;
       case DRAINED:
         // A new connection has potentially been offered up to a drained pool. Restart the drain.
+        cleanMode = CleanMode.DRAINING;
         executorService.execute(drainModeRunnable);
         break;
     }
