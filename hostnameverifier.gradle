@@ -1,12 +1,11 @@
 apply plugin: 'java'
 
-// static version of okhttp for inclusion in apps targeting older releases
+// static library containing only the okhttp HostnameVerifier
 sourceSets {
     main {
         java {
             srcDirs = [
-                'okhttp/src/main/java',
-                'okio/src/main/java',
+                'okhttp/src/main/java/com/squareup/okhttp/internal/tls/',
             ]
         }
     }
