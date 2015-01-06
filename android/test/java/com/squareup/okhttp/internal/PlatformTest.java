@@ -58,18 +58,12 @@ public class PlatformTest {
   @Test
   public void getNpnSelectedProtocol() throws Exception {
     Platform platform = new Platform();
-    byte[] npnBytes = "npn".getBytes();
     byte[] alpnBytes = "alpn".getBytes();
 
     TestSSLSocketImpl arbitrarySocketImpl = new TestSSLSocketImpl();
     assertNull(platform.getNpnSelectedProtocol(arbitrarySocketImpl));
 
-    NpnOnlySSLSocketImpl npnOnlySSLSocketImpl = new NpnOnlySSLSocketImpl();
-    npnOnlySSLSocketImpl.npnProtocols = npnBytes;
-    assertEquals(ByteString.of(npnBytes), platform.getNpnSelectedProtocol(npnOnlySSLSocketImpl));
-
     FullOpenSSLSocketImpl openSslSocket = new FullOpenSSLSocketImpl();
-    openSslSocket.npnProtocols = npnBytes;
     openSslSocket.alpnProtocols = alpnBytes;
     assertEquals(ByteString.of(alpnBytes), platform.getNpnSelectedProtocol(openSslSocket));
   }
@@ -83,20 +77,14 @@ public class PlatformTest {
     TestSSLSocketImpl arbitrarySocketImpl = new TestSSLSocketImpl();
     platform.setNpnProtocols(arbitrarySocketImpl, protocols);
 
-    NpnOnlySSLSocketImpl npnOnlySSLSocketImpl = new NpnOnlySSLSocketImpl();
-    platform.setNpnProtocols(npnOnlySSLSocketImpl, protocols);
-    assertNotNull(npnOnlySSLSocketImpl.npnProtocols);
-
     FullOpenSSLSocketImpl openSslSocket = new FullOpenSSLSocketImpl();
     platform.setNpnProtocols(openSslSocket, protocols);
-    assertNotNull(openSslSocket.npnProtocols);
     assertNotNull(openSslSocket.alpnProtocols);
   }
 
   private static class FullOpenSSLSocketImpl extends OpenSSLSocketImpl {
     private boolean useSessionTickets;
     private String hostname;
-    private byte[] npnProtocols;
     private byte[] alpnProtocols;
 
     public FullOpenSSLSocketImpl() throws IOException {
@@ -114,16 +102,6 @@ public class PlatformTest {
     }
 
     @Override
-    public void setNpnProtocols(byte[] npnProtocols) {
-      this.npnProtocols = npnProtocols;
-    }
-
-    @Override
-    public byte[] getNpnSelectedProtocol() {
-      return npnProtocols;
-    }
-
-    @Override
     public void setAlpnProtocols(byte[] alpnProtocols) {
       this.alpnProtocols = alpnProtocols;
     }
@@ -131,20 +109,6 @@ public class PlatformTest {
     @Override
     public byte[] getAlpnSelectedProtocol() {
       return alpnProtocols;
-    }
-  }
-
-  // Legacy case
-  private static class NpnOnlySSLSocketImpl extends TestSSLSocketImpl {
-
-    private byte[] npnProtocols;
-
-    public void setNpnProtocols(byte[] npnProtocols) {
-      this.npnProtocols = npnProtocols;
-    }
-
-    public byte[] getNpnSelectedProtocol() {
-      return npnProtocols;
     }
   }
 

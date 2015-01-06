@@ -56,12 +56,6 @@ public final class Platform {
     /** setAlpnSelectedProtocol(byte[]) */
     private static final OptionalMethod<Socket> SET_ALPN_PROTOCOLS =
             new OptionalMethod<Socket>(null, "setAlpnProtocols", byte[].class );
-    /** byte[] getNpnSelectedProtocol() */
-    private static final OptionalMethod<Socket> GET_NPN_SELECTED_PROTOCOL =
-            new OptionalMethod<Socket>(byte[].class, "getNpnSelectedProtocol");
-    /** setNpnSelectedProtocol(byte[]) */
-    private static final OptionalMethod<Socket> SET_NPN_PROTOCOLS =
-            new OptionalMethod<Socket>(null, "setNpnProtocols", byte[].class);
 
     public void logW(String warning) {
         System.logW(warning);
@@ -113,25 +107,14 @@ public final class Platform {
      */
     public ByteString getNpnSelectedProtocol(SSLSocket socket) {
         boolean alpnSupported = GET_ALPN_SELECTED_PROTOCOL.isSupported(socket);
-        boolean npnSupported = GET_NPN_SELECTED_PROTOCOL.isSupported(socket);
-        if (!(alpnSupported || npnSupported)) {
+        if (!alpnSupported) {
             return null;
         }
 
-        // Prefer ALPN's result if it is present.
-        if (alpnSupported) {
-            byte[] alpnResult =
-                (byte[]) GET_ALPN_SELECTED_PROTOCOL.invokeWithoutCheckedException(socket);
-            if (alpnResult != null) {
-                return ByteString.of(alpnResult);
-            }
-        }
-        if (npnSupported) {
-            byte[] npnResult =
-                (byte[]) GET_NPN_SELECTED_PROTOCOL.invokeWithoutCheckedException(socket);
-            if (npnResult != null) {
-                return ByteString.of(npnResult);
-            }
+        byte[] alpnResult =
+            (byte[]) GET_ALPN_SELECTED_PROTOCOL.invokeWithoutCheckedException(socket);
+        if (alpnResult != null) {
+            return ByteString.of(alpnResult);
         }
         return null;
     }
@@ -142,20 +125,13 @@ public final class Platform {
      */
     public void setNpnProtocols(SSLSocket socket, List<Protocol> npnProtocols) {
         boolean alpnSupported = SET_ALPN_PROTOCOLS.isSupported(socket);
-        boolean npnSupported = SET_NPN_PROTOCOLS.isSupported(socket);
-        if (!(alpnSupported || npnSupported)) {
+        if (!alpnSupported) {
             return;
         }
 
         byte[] protocols = concatLengthPrefixed(npnProtocols);
-        if (alpnSupported) {
-            SET_ALPN_PROTOCOLS.invokeWithoutCheckedException(
-                socket, new Object[] { protocols });
-        }
-        if (npnSupported) {
-            SET_NPN_PROTOCOLS.invokeWithoutCheckedException(
-                socket, new Object[] { protocols });
-        }
+        SET_ALPN_PROTOCOLS.invokeWithoutCheckedException(
+            socket, new Object[] { protocols });
     }
 
     /**
