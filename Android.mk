@@ -57,6 +57,7 @@ LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_STATIC_JAVA_LIBRARY)
 
+ifeq ($(HOST_OS),linux)
 include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp-hostdex
 LOCAL_MODULE_TAGS := optional
@@ -66,3 +67,4 @@ LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
 LOCAL_JAVA_LIBRARIES := conscrypt-hostdex
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_HOST_DALVIK_JAVA_LIBRARY)
+endif  # ($(HOST_OS),linux)
