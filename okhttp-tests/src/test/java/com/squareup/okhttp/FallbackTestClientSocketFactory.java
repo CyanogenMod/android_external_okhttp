@@ -24,11 +24,10 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
- * An SSLSocketFactory that delegates calls. It keeps a record of any sockets created.
- * If {@link #disableTlsFallbackScsv} is set to {@code true} then sockets created by the delegate
- * are wrapped with ones that will not accept the {@link #TLS_FALLBACK_SCSV} cipher, thus
- * bypassing server-side fallback checks on platforms that support it. Unfortunately this wrapping
- * will disable any reflection-based calls to SSLSocket from Platform.
+ * An SSLSocketFactory that delegates calls. Sockets created by the delegate are wrapped with ones
+ * that will not accept the {@link #TLS_FALLBACK_SCSV} cipher, thus bypassing server-side fallback
+ * checks on platforms that support it. Unfortunately this wrapping will disable any
+ * reflection-based calls to SSLSocket from Platform.
  */
 public class FallbackTestClientSocketFactory extends DelegatingSSLSocketFactory {
   /**
@@ -37,79 +36,46 @@ public class FallbackTestClientSocketFactory extends DelegatingSSLSocketFactory 
    */
   public static final String TLS_FALLBACK_SCSV = "TLS_FALLBACK_SCSV";
 
-  private final boolean disableTlsFallbackScsv;
-  private final List<SSLSocket> createdSockets = new ArrayList<SSLSocket>();
-
-  public FallbackTestClientSocketFactory(SSLSocketFactory delegate,
-          boolean disableTlsFallbackScsv) {
+  public FallbackTestClientSocketFactory(SSLSocketFactory delegate) {
     super(delegate);
-    this.disableTlsFallbackScsv = disableTlsFallbackScsv;
   }
 
   @Override public SSLSocket createSocket(Socket s, String host, int port, boolean autoClose)
       throws IOException {
     SSLSocket socket = super.createSocket(s, host, port, autoClose);
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
   @Override public SSLSocket createSocket() throws IOException {
     SSLSocket socket = super.createSocket();
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
   @Override public SSLSocket createSocket(String host,int port) throws IOException {
     SSLSocket socket = super.createSocket(host, port);
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
   @Override public SSLSocket createSocket(String host,int port, InetAddress localHost,
       int localPort) throws IOException {
     SSLSocket socket = super.createSocket(host, port, localHost, localPort);
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
   @Override public SSLSocket createSocket(InetAddress host,int port) throws IOException {
     SSLSocket socket = super.createSocket(host, port);
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
   @Override public SSLSocket createSocket(InetAddress address,int port,
       InetAddress localAddress, int localPort) throws IOException {
     SSLSocket socket = super.createSocket(address, port, localAddress, localPort);
-    if (disableTlsFallbackScsv) {
-      socket = new TlsFallbackDisabledScsvSSLSocket(socket);
-    }
-    createdSockets.add(socket);
-    return socket;
+    return new TlsFallbackScsvDisabledSSLSocket(socket);
   }
 
-  public List<SSLSocket> getCreatedSockets() {
-    return createdSockets;
-  }
+  private static class TlsFallbackScsvDisabledSSLSocket extends DelegatingSSLSocket {
 
-  private static class TlsFallbackDisabledScsvSSLSocket extends DelegatingSSLSocket {
-
-    public TlsFallbackDisabledScsvSSLSocket(SSLSocket socket) {
+    public TlsFallbackScsvDisabledSSLSocket(SSLSocket socket) {
       super(socket);
     }
 

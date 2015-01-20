@@ -30,44 +30,44 @@ public class HttpHandler extends URLStreamHandler {
             ConfigAwareConnectionPool.getInstance();
 
     @Override protected URLConnection openConnection(URL url) throws IOException {
-        return newOkHttpClient(null /* proxy */).open(url);
+        return newOkUrlFactory(null /* proxy */).open(url);
     }
 
     @Override protected URLConnection openConnection(URL url, Proxy proxy) throws IOException {
         if (url == null || proxy == null) {
             throw new IllegalArgumentException("url == null || proxy == null");
         }
-        return newOkHttpClient(proxy).open(url);
+        return newOkUrlFactory(proxy).open(url);
     }
 
     @Override protected int getDefaultPort() {
         return 80;
     }
 
-    protected OkHttpClient newOkHttpClient(Proxy proxy) {
-        OkHttpClient okHttpClient = createHttpOkHttpClient(proxy);
-        okHttpClient.setConnectionPool(configAwareConnectionPool.get());
-        return okHttpClient;
+    protected OkUrlFactory newOkUrlFactory(Proxy proxy) {
+        OkUrlFactory okUrlFactory = createHttpOkUrlFactory(proxy);
+        okUrlFactory.client().setConnectionPool(configAwareConnectionPool.get());
+        return okUrlFactory;
     }
 
     /**
      * Creates an OkHttpClient suitable for creating {@link java.net.HttpURLConnection} instances on
      * Android.
      */
-    public static OkHttpClient createHttpOkHttpClient(Proxy proxy) {
+    public static OkUrlFactory createHttpOkUrlFactory(Proxy proxy) {
         OkHttpClient client = new OkHttpClient();
-        client.setFollowProtocolRedirects(false);
+        client.setFollowSslRedirects(false);
         if (proxy != null) {
             client.setProxy(proxy);
         }
 
         // Explicitly set the response cache.
+        OkUrlFactory okUrlFactory = new OkUrlFactory(client);
         ResponseCache responseCache = ResponseCache.getDefault();
         if (responseCache != null) {
-            client.setResponseCache(responseCache);
+            AndroidInternal.setResponseCache(okUrlFactory, responseCache);
         }
-
-        return client;
+        return okUrlFactory;
     }
 
 }

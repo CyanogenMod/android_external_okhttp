@@ -16,14 +16,19 @@
 LOCAL_PATH := $(call my-dir)
 
 okhttp_common_src_files := $(call all-java-files-under,okhttp/src/main/java)
-okhttp_common_src_files += $(call all-java-files-under,okio/src/main/java)
+okhttp_common_src_files += $(call all-java-files-under,okhttp-urlconnection/src/main/java)
+okhttp_common_src_files += $(call all-java-files-under,okhttp-android-support/src/main/java)
+okhttp_common_src_files += $(call all-java-files-under,okio/okio/src/main/java)
 okhttp_system_src_files := $(filter-out %/Platform.java, $(okhttp_common_src_files))
 okhttp_system_src_files += $(call all-java-files-under, android/main/java)
 
 okhttp_test_src_files := $(call all-java-files-under,okhttp-tests/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-urlconnection/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-android-support/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okio/okio/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/main/java)
+okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,android/test/java)
-okhttp_test_src_files := $(filter-out mockwebserver/src/main/java/com/squareup/okhttp/internal/spdy/SpdyServer.java, $(okhttp_test_src_files))
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp
