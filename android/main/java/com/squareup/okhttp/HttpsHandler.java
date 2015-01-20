@@ -24,7 +24,7 @@ import java.util.List;
 import javax.net.ssl.HttpsURLConnection;
 
 public final class HttpsHandler extends HttpHandler {
-    private static final List<Protocol> ENABLED_PROTOCOLS = Arrays.asList(Protocol.HTTP_11);
+    private static final List<Protocol> ENABLED_PROTOCOLS = Arrays.asList(Protocol.HTTP_1_1);
     private final ConfigAwareConnectionPool configAwareConnectionPool =
             ConfigAwareConnectionPool.getInstance();
 
@@ -33,30 +33,31 @@ public final class HttpsHandler extends HttpHandler {
     }
 
     @Override
-    protected OkHttpClient newOkHttpClient(Proxy proxy) {
-        OkHttpClient okHttpClient = createHttpsOkHttpClient(proxy);
-        okHttpClient.setConnectionPool(configAwareConnectionPool.get());
-        return okHttpClient;
+    protected OkUrlFactory newOkUrlFactory(Proxy proxy) {
+        OkUrlFactory okUrlFactory = createHttpsOkUrlFactory(proxy);
+        okUrlFactory.client().setConnectionPool(configAwareConnectionPool.get());
+        return okUrlFactory;
     }
 
     /**
      * Creates an OkHttpClient suitable for creating {@link HttpsURLConnection} instances on
      * Android.
      */
-    public static OkHttpClient createHttpsOkHttpClient(Proxy proxy) {
+    public static OkUrlFactory createHttpsOkUrlFactory(Proxy proxy) {
         // The HTTPS OkHttpClient is an HTTP OkHttpClient with extra configuration.
-        OkHttpClient client = HttpHandler.createHttpOkHttpClient(proxy);
+        OkUrlFactory okUrlFactory = HttpHandler.createHttpOkUrlFactory(proxy);
 
-        client.setProtocols(ENABLED_PROTOCOLS);
+        OkHttpClient okHttpClient = okUrlFactory.client();
+        okHttpClient.setProtocols(ENABLED_PROTOCOLS);
 
         // OkHttp does not automatically honor the system-wide HostnameVerifier set with
         // HttpsURLConnection.setDefaultHostnameVerifier().
-        client.setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
+        okUrlFactory.client().setHostnameVerifier(HttpsURLConnection.getDefaultHostnameVerifier());
         // OkHttp does not automatically honor the system-wide SSLSocketFactory set with
         // HttpsURLConnection.setDefaultSSLSocketFactory().
         // See https://github.com/square/okhttp/issues/184 for details.
-        client.setSslSocketFactory(HttpsURLConnection.getDefaultSSLSocketFactory());
+        okHttpClient.setSslSocketFactory(HttpsURLConnection.getDefaultSSLSocketFactory());
 
-        return client;
+        return okUrlFactory;
     }
 }

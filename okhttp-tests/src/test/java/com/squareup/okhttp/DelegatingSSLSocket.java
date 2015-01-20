@@ -28,7 +28,7 @@ import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 
 /**
- * An {@link javax.net.ssl.SSLSocket} that delegates all {@link javax.net.ssl.SSLSocket} calls.
+ * An {@link javax.net.ssl.SSLSocket} that delegates all calls.
  */
 public abstract class DelegatingSSLSocket extends SSLSocket {
   protected final SSLSocket delegate;

@@ -16,67 +16,77 @@
 package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.Address;
-import com.squareup.okhttp.Connection;
-import com.squareup.okhttp.ConnectionPool;
-import com.squareup.okhttp.HostResolver;
+import com.squareup.okhttp.ConnectionSpec;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Request;
 import com.squareup.okhttp.Route;
-import com.squareup.okhttp.RouteDatabase;
+import com.squareup.okhttp.internal.Internal;
+import com.squareup.okhttp.internal.Network;
+import com.squareup.okhttp.internal.RouteDatabase;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
-import java.net.ProxySelector;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.util.Iterator;
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLProtocolException;
 
 import static com.squareup.okhttp.internal.Util.getEffectivePort;
 
 /**
  * Selects routes to connect to an origin server. Each connection requires a
- * choice of proxy server and IP address. Connections may also be recycled.
+ * choice of proxy server, IP address, and TLS mode. Connections may also be
+ * recycled.
  */
 public final class RouteSelector {
-
   private final Address address;
   private final URI uri;
-  private final ProxySelector proxySelector;
-  private final ConnectionPool pool;
-  private final HostResolver hostResolver;
+  private final Network network;
+  private final OkHttpClient client;
   private final RouteDatabase routeDatabase;
+  private final Request request;
 
   /* The most recently attempted route. */
   private Proxy lastProxy;
   private InetSocketAddress lastInetSocketAddress;
+  private ConnectionSpec lastSpec;
 
   /* State for negotiating the next proxy to use. */
-  private boolean hasNextProxy;
-  private Proxy userSpecifiedProxy;
-  private Iterator<Proxy> proxySelectorProxies;
+  private List<Proxy> proxies = Collections.emptyList();
+  private int nextProxyIndex;
 
-  /* State for negotiating the next InetSocketAddress to use. */
-  private InetAddress[] socketAddresses;
-  private int nextSocketAddressIndex;
-  private int socketPort;
+  /* State for negotiating the next socket address to use. */
+  private List<InetSocketAddress> inetSocketAddresses = Collections.emptyList();
+  private int nextInetSocketAddressIndex;
+
+  /* Specs to attempt with the connection. */
+  private List<ConnectionSpec> connectionSpecs = Collections.emptyList();
+  private int nextSpecIndex;
 
   /* State for negotiating failed routes */
-  private final List<Route> postponedRoutes;
+  private final List<Route> postponedRoutes = new ArrayList<>();
 
-  public RouteSelector(Address address, URI uri, ProxySelector proxySelector, ConnectionPool pool,
-      HostResolver hostResolver, RouteDatabase routeDatabase) {
+  private RouteSelector(Address address, URI uri, OkHttpClient client, Request request) {
     this.address = address;
     this.uri = uri;
-    this.proxySelector = proxySelector;
-    this.pool = pool;
-    this.hostResolver = hostResolver;
-    this.routeDatabase = routeDatabase;
-    this.postponedRoutes = new LinkedList<Route>();
+    this.client = client;
+    this.routeDatabase = Internal.instance.routeDatabase(client);
+    this.network = Internal.instance.network(client);
+    this.request = request;
 
     resetNextProxy(uri, address.getProxy());
+  }
+
+  public static RouteSelector get(Address address, Request request, OkHttpClient client)
+      throws IOException {
+    return new RouteSelector(address, request.uri(), client, request);
   }
 
   /**
@@ -84,110 +94,114 @@ public final class RouteSelector {
    * least one route.
    */
   public boolean hasNext() {
-    return hasNextInetSocketAddress() || hasNextProxy() || hasNextPostponed();
+    return hasNextConnectionSpec()
+        || hasNextInetSocketAddress()
+        || hasNextProxy()
+        || hasNextPostponed();
   }
 
-  /**
-   * Returns the next route address to attempt.
-   *
-   * @throws NoSuchElementException if there are no more routes to attempt.
-   */
-  public Connection next(String method) throws IOException {
-    // Always prefer pooled connections over new connections.
-    for (Connection pooled; (pooled = pool.get(address)) != null; ) {
-      if (method.equals("GET") || pooled.isReadable()) return pooled;
-      pooled.close();
-    }
-
+  public Route next() throws IOException {
     // Compute the next route to attempt.
-    if (!hasNextInetSocketAddress()) {
-      if (!hasNextProxy()) {
-        if (!hasNextPostponed()) {
-          throw new NoSuchElementException();
+    if (!hasNextConnectionSpec()) {
+      if (!hasNextInetSocketAddress()) {
+        if (!hasNextProxy()) {
+          if (!hasNextPostponed()) {
+            throw new NoSuchElementException();
+          }
+          return nextPostponed();
         }
-        return new Connection(pool, nextPostponed());
+        lastProxy = nextProxy();
       }
-      lastProxy = nextProxy();
-      resetNextInetSocketAddress(lastProxy);
+      lastInetSocketAddress = nextInetSocketAddress();
     }
-    lastInetSocketAddress = nextInetSocketAddress();
+    lastSpec = nextConnectionSpec();
 
-    Route route = new Route(address, lastProxy, lastInetSocketAddress);
+    final boolean shouldSendTlsFallbackIndicator = shouldSendTlsFallbackIndicator(lastSpec);
+    Route route = new Route(address, lastProxy, lastInetSocketAddress, lastSpec,
+        shouldSendTlsFallbackIndicator);
     if (routeDatabase.shouldPostpone(route)) {
       postponedRoutes.add(route);
-      // We will only recurse in order to skip previously failed routes. They will be
-      // tried last.
-      return next(method);
+      // We will only recurse in order to skip previously failed routes. They will be tried last.
+      return next();
     }
 
-    return new Connection(pool, route);
+    return route;
+  }
+
+  private boolean shouldSendTlsFallbackIndicator(ConnectionSpec connectionSpec) {
+    return connectionSpec != connectionSpecs.get(0)
+        && connectionSpec.isTls();
   }
 
   /**
    * Clients should invoke this method when they encounter a connectivity
    * failure on a connection returned by this route selector.
    */
-  public void connectFailed(Connection connection, IOException failure) {
-    // If this is a recycled connection, don't count its failure against the route.
-    if (connection.recycleCount() > 0) return;
-
-    Route failedRoute = connection.getRoute();
-    if (failedRoute.getProxy().type() != Proxy.Type.DIRECT && proxySelector != null) {
+  public void connectFailed(Route failedRoute, IOException failure) {
+    if (failedRoute.getProxy().type() != Proxy.Type.DIRECT && address.getProxySelector() != null) {
       // Tell the proxy selector when we fail to connect on a fresh connection.
-      proxySelector.connectFailed(uri, failedRoute.getProxy().address(), failure);
+      address.getProxySelector().connectFailed(uri, failedRoute.getProxy().address(), failure);
     }
 
     routeDatabase.failed(failedRoute);
-  }
 
-  /** Resets {@link #nextProxy} to the first option. */
-  private void resetNextProxy(URI uri, Proxy proxy) {
-    this.hasNextProxy = true; // This includes NO_PROXY!
-    if (proxy != null) {
-      this.userSpecifiedProxy = proxy;
-    } else {
-      List<Proxy> proxyList = proxySelector.select(uri);
-      if (proxyList != null) {
-        this.proxySelectorProxies = proxyList.iterator();
+    // If the previously returned route's problem was not related to the connection's spec, and the
+    // next route only changes that, we shouldn't even attempt it. This suppresses it in both this
+    // selector and also in the route database.
+    if (!(failure instanceof SSLHandshakeException) && !(failure instanceof SSLProtocolException)) {
+      while (nextSpecIndex < connectionSpecs.size()) {
+        ConnectionSpec connectionSpec = connectionSpecs.get(nextSpecIndex++);
+        final boolean shouldSendTlsFallbackIndicator =
+            shouldSendTlsFallbackIndicator(connectionSpec);
+        Route toSuppress = new Route(address, lastProxy, lastInetSocketAddress, connectionSpec,
+            shouldSendTlsFallbackIndicator);
+        routeDatabase.failed(toSuppress);
       }
     }
+  }
+
+  /** Prepares the proxy servers to try. */
+  private void resetNextProxy(URI uri, Proxy proxy) {
+    if (proxy != null) {
+      // If the user specifies a proxy, try that and only that.
+      proxies = Collections.singletonList(proxy);
+    } else {
+      // Try each of the ProxySelector choices until one connection succeeds. If none succeed
+      // then we'll try a direct connection below.
+      proxies = new ArrayList<>();
+      List<Proxy> selectedProxies = client.getProxySelector().select(uri);
+      if (selectedProxies != null) proxies.addAll(selectedProxies);
+      // Finally try a direct connection. We only try it once!
+      proxies.removeAll(Collections.singleton(Proxy.NO_PROXY));
+      proxies.add(Proxy.NO_PROXY);
+    }
+    nextProxyIndex = 0;
   }
 
   /** Returns true if there's another proxy to try. */
   private boolean hasNextProxy() {
-    return hasNextProxy;
+    return nextProxyIndex < proxies.size();
   }
 
   /** Returns the next proxy to try. May be PROXY.NO_PROXY but never null. */
-  private Proxy nextProxy() {
-    // If the user specifies a proxy, try that and only that.
-    if (userSpecifiedProxy != null) {
-      hasNextProxy = false;
-      return userSpecifiedProxy;
+  private Proxy nextProxy() throws IOException {
+    if (!hasNextProxy()) {
+      throw new SocketException("No route to " + address.getUriHost()
+          + "; exhausted proxy configurations: " + proxies);
     }
-
-    // Try each of the ProxySelector choices until one connection succeeds. If none succeed
-    // then we'll try a direct connection below.
-    if (proxySelectorProxies != null) {
-      while (proxySelectorProxies.hasNext()) {
-        Proxy candidate = proxySelectorProxies.next();
-        if (candidate.type() != Proxy.Type.DIRECT) {
-          return candidate;
-        }
-      }
-    }
-
-    // Finally try a direct connection.
-    hasNextProxy = false;
-    return Proxy.NO_PROXY;
+    Proxy result = proxies.get(nextProxyIndex++);
+    resetNextInetSocketAddress(result);
+    return result;
   }
 
-  /** Resets {@link #nextInetSocketAddress} to the first option. */
+  /** Prepares the socket addresses to attempt for the current proxy or host. */
   private void resetNextInetSocketAddress(Proxy proxy) throws UnknownHostException {
-    socketAddresses = null; // Clear the addresses. Necessary if getAllByName() below throws!
+    // Clear the addresses. Necessary if getAllByName() below throws!
+    inetSocketAddresses = new ArrayList<>();
 
     String socketHost;
-    if (proxy.type() == Proxy.Type.DIRECT) {
+    int socketPort;
+    if (proxy.type() == Proxy.Type.DIRECT || proxy.type() == Proxy.Type.SOCKS) {
       socketHost = address.getUriHost();
       socketPort = getEffectivePort(uri);
     } else {
@@ -202,8 +216,10 @@ public final class RouteSelector {
     }
 
     // Try each address for best behavior in mixed IPv4/IPv6 environments.
-    socketAddresses = hostResolver.getAllByName(socketHost);
-    nextSocketAddressIndex = 0;
+    for (InetAddress inetAddress : network.resolveInetAddresses(socketHost)) {
+      inetSocketAddresses.add(new InetSocketAddress(inetAddress, socketPort));
+    }
+    nextInetSocketAddressIndex = 0;
   }
 
   /**
@@ -226,19 +242,45 @@ public final class RouteSelector {
 
   /** Returns true if there's another socket address to try. */
   private boolean hasNextInetSocketAddress() {
-    return socketAddresses != null;
+    return nextInetSocketAddressIndex < inetSocketAddresses.size();
   }
 
   /** Returns the next socket address to try. */
-  private InetSocketAddress nextInetSocketAddress() throws UnknownHostException {
-    InetSocketAddress result =
-        new InetSocketAddress(socketAddresses[nextSocketAddressIndex++], socketPort);
-    if (nextSocketAddressIndex == socketAddresses.length) {
-      socketAddresses = null; // So that hasNextInetSocketAddress() returns false.
-      nextSocketAddressIndex = 0;
+  private InetSocketAddress nextInetSocketAddress() throws IOException {
+    if (!hasNextInetSocketAddress()) {
+      throw new SocketException("No route to " + address.getUriHost()
+          + "; exhausted inet socket addresses: " + inetSocketAddresses);
     }
-
+    InetSocketAddress result = inetSocketAddresses.get(nextInetSocketAddressIndex++);
+    resetConnectionSpecs();
     return result;
+  }
+
+  /** Prepares the connection specs to attempt. */
+  private void resetConnectionSpecs() {
+    connectionSpecs = new ArrayList<>();
+    List<ConnectionSpec> specs = address.getConnectionSpecs();
+    for (int i = 0, size = specs.size(); i < size; i++) {
+      ConnectionSpec spec = specs.get(i);
+      if (request.isHttps() == spec.isTls()) {
+        connectionSpecs.add(spec);
+      }
+    }
+    nextSpecIndex = 0;
+  }
+
+  /** Returns true if there's another connection spec to try. */
+  private boolean hasNextConnectionSpec() {
+    return nextSpecIndex < connectionSpecs.size();
+  }
+
+  /** Returns the next connection spec to try. */
+  private ConnectionSpec nextConnectionSpec() throws IOException {
+    if (!hasNextConnectionSpec()) {
+      throw new SocketException("No route to " + address.getUriHost()
+          + "; exhausted connection specs: " + connectionSpecs);
+    }
+    return connectionSpecs.get(nextSpecIndex++);
   }
 
   /** Returns true if there is another postponed route to try. */
