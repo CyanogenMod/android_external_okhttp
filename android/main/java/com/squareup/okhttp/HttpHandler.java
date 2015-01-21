@@ -23,8 +23,13 @@ import java.net.ResponseCache;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.URLStreamHandler;
+import java.util.Collections;
+import java.util.List;
 
 public class HttpHandler extends URLStreamHandler {
+
+    private final static List<ConnectionSpec> CLEARTEXT_ONLY =
+        Collections.singletonList(ConnectionSpec.CLEARTEXT);
 
     private final ConfigAwareConnectionPool configAwareConnectionPool =
             ConfigAwareConnectionPool.getInstance();
@@ -46,6 +51,9 @@ public class HttpHandler extends URLStreamHandler {
 
     protected OkUrlFactory newOkUrlFactory(Proxy proxy) {
         OkUrlFactory okUrlFactory = createHttpOkUrlFactory(proxy);
+        // For HttpURLConnections created through java.net.URL Android uses a connection pool that
+        // is aware when the default network changes so that pooled connections are not re-used when
+        // the default network changes.
         okUrlFactory.client().setConnectionPool(configAwareConnectionPool.get());
         return okUrlFactory;
     }
@@ -54,14 +62,21 @@ public class HttpHandler extends URLStreamHandler {
      * Creates an OkHttpClient suitable for creating {@link java.net.HttpURLConnection} instances on
      * Android.
      */
+    // Visible for android.net.Network.
     public static OkUrlFactory createHttpOkUrlFactory(Proxy proxy) {
         OkHttpClient client = new OkHttpClient();
+
+        // Do not permit http -> https and https -> http redirects.
         client.setFollowSslRedirects(false);
+        client.setConnectionSpecs(CLEARTEXT_ONLY);
+
+        // When we do not set the Proxy explicitly OkHttp picks up a ProxySelector using
+        // ProxySelector.getDefault().
         if (proxy != null) {
             client.setProxy(proxy);
         }
 
-        // Explicitly set the response cache.
+        // OkHttp requires that we explicitly set the response cache.
         OkUrlFactory okUrlFactory = new OkUrlFactory(client);
         ResponseCache responseCache = ResponseCache.getDefault();
         if (responseCache != null) {
