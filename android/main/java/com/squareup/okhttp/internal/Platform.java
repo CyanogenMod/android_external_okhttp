@@ -79,7 +79,7 @@ public final class Platform {
             SET_HOSTNAME.invokeOptionalWithoutCheckedException(sslSocket, hostname);
         }
 
-        // Enable NPN / ALPN.
+        // Enable ALPN.
         boolean alpnSupported = SET_ALPN_PROTOCOLS.isSupported(sslSocket);
         if (!alpnSupported) {
             return;
@@ -130,7 +130,7 @@ public final class Platform {
         Buffer result = new Buffer();
         for (int i = 0, size = protocols.size(); i < size; i++) {
             Protocol protocol = protocols.get(i);
-            if (protocol == Protocol.HTTP_1_0) continue; // No HTTP/1.0 for NPN.
+            if (protocol == Protocol.HTTP_1_0) continue; // No HTTP/1.0 for ALPN.
             result.writeByte(protocol.toString().length());
             result.writeUtf8(protocol.toString());
         }
