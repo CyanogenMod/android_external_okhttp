@@ -430,6 +430,11 @@ public final class URLConnectionTest {
     HttpURLConnection connection1 = client.open(server.getUrl("/a"));
     connection1.setReadTimeout(100);
     assertContent("This connection won't pool properly", connection1);
+
+    // Give the server time to enact the socket policy if it's one that could happen after the
+    // client has received the response.
+    Thread.sleep(500);
+
     assertEquals(0, server.takeRequest().getSequenceNumber());
     HttpURLConnection connection2 = client.open(server.getUrl("/b"));
     connection2.setReadTimeout(100);
@@ -687,6 +692,10 @@ public final class URLConnectionTest {
     client.setHostnameVerifier(new RecordingHostnameVerifier());
 
     assertContent("abc", client.open(server.getUrl("/")));
+
+    // Give the server time to disconnect.
+    Thread.sleep(500);
+
     assertContent("def", client.open(server.getUrl("/")));
 
     RecordedRequest request1 = server.takeRequest();
@@ -1278,6 +1287,9 @@ public final class URLConnectionTest {
 
     // Seed the pool with a bad connection.
     assertContent("a", client.open(server.getUrl("/")));
+
+    // Give the server time to disconnect.
+    Thread.sleep(500);
 
     // This connection will need to be recovered. When it is, transparent gzip should still work!
     assertContent("b", client.open(server.getUrl("/")));
@@ -2629,6 +2641,9 @@ public final class URLConnectionTest {
     server.play();
 
     assertContent("A", client.open(server.getUrl("/a")));
+
+    // Give the server time to disconnect.
+    Thread.sleep(500);
 
     // If the request body is larger than OkHttp's replay buffer, the failure may still occur.
     byte[] requestBody = new byte[requestSize];
