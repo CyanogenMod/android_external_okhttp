@@ -34,7 +34,6 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
-LOCAL_JAVACFLAGS := -encoding UTF-8
 LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
 LOCAL_JAVA_LIBRARIES := core-libart conscrypt
 LOCAL_NO_STANDARD_LIBRARIES := true
@@ -46,7 +45,6 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp-nojarjar
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
-LOCAL_JAVACFLAGS := -encoding UTF-8
 LOCAL_JAVA_LIBRARIES := core-libart conscrypt
 LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
@@ -56,7 +54,6 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp-tests-nojarjar
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_test_src_files)
-LOCAL_JAVACFLAGS := -encoding UTF-8
 LOCAL_JAVA_LIBRARIES := core-libart okhttp-nojarjar junit4-target bouncycastle-nojarjar conscrypt
 LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
@@ -67,7 +64,6 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp-hostdex
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
-LOCAL_JAVACFLAGS := -encoding UTF-8
 LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
 LOCAL_JAVA_LIBRARIES := conscrypt-hostdex
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
