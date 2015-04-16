@@ -29,6 +29,8 @@ okhttp_test_src_files += $(call all-java-files-under,okio/okio/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/main/java)
 okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,android/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-ws/src/main/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-ws-tests/src/test/java)
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp
