@@ -32,6 +32,16 @@ okhttp_test_src_files += $(call all-java-files-under,android/test/java)
 okhttp_test_src_files += $(call all-java-files-under,okhttp-ws/src/main/java)
 okhttp_test_src_files += $(call all-java-files-under,okhttp-ws-tests/src/test/java)
 
+# Exclude tests Android currently has problems with:
+# 1) Parameterized (requires JUnit 4.11).
+# 2) New dependencies like gson.
+okhttp_test_src_excludes := \
+    okhttp-tests/src/test/java/com/squareup/okhttp/WebPlatformUrlTest.java \
+    okhttp-tests/src/test/java/com/squareup/okhttp/WebPlatformTestRun.java
+
+okhttp_test_src_files := \
+    $(filter-out $(okhttp_test_src_excludes), $(okhttp_test_src_files))
+
 include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp
 LOCAL_MODULE_TAGS := optional
