@@ -23,15 +23,18 @@ import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
 import com.squareup.okhttp.Route;
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.Platform;
+import com.squareup.okhttp.internal.http.RouteException;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.HttpDate;
 import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.HttpMethod;
 import com.squareup.okhttp.internal.http.OkHeaders;
+import com.squareup.okhttp.internal.http.RequestException;
 import com.squareup.okhttp.internal.http.RetryableSink;
 import com.squareup.okhttp.internal.http.StatusLine;
 import java.io.FileNotFoundException;
@@ -73,6 +76,7 @@ import okio.Sink;
 public class HttpURLConnectionImpl extends HttpURLConnection {
   private static final Set<String> METHODS = new LinkedHashSet<>(
       Arrays.asList("OPTIONS", "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "PATCH"));
+  private static final RequestBody EMPTY_REQUEST_BODY = RequestBody.create(null, new byte[0]);
 
   final OkHttpClient client;
 
@@ -314,9 +318,13 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
 
   private HttpEngine newHttpEngine(String method, Connection connection,
       RetryableSink requestBody, Response priorResponse) {
+    // OkHttp's Call API requires a placeholder body; the real body will be streamed separately.
+    RequestBody placeholderBody = HttpMethod.requiresRequestBody(method)
+        ? EMPTY_REQUEST_BODY
+        : null;
     Request.Builder builder = new Request.Builder()
         .url(getURL())
-        .method(method, null /* No body; that's passed separately. */);
+        .method(method, placeholderBody);
     Headers headers = requestHeaders.build();
     for (int i = 0, size = headers.size(); i < size; i++) {
       builder.addHeader(headers.name(i), headers.value(i));
@@ -432,7 +440,25 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
       }
 
       return true;
+    } catch (RequestException e) {
+      // An attempt to interpret a request failed.
+      IOException toThrow = e.getCause();
+      httpEngineFailure = toThrow;
+      throw toThrow;
+    } catch (RouteException e) {
+      // The attempt to connect via a route failed. The request will not have been sent.
+      HttpEngine retryEngine = httpEngine.recover(e);
+      if (retryEngine != null) {
+        httpEngine = retryEngine;
+        return false;
+      }
+
+      // Give up; recovery is not possible.
+      IOException toThrow = e.getLastConnectException();
+      httpEngineFailure = toThrow;
+      throw toThrow;
     } catch (IOException e) {
+      // An attempt to communicate with a server failed. The request may have been sent.
       HttpEngine retryEngine = httpEngine.recover(e);
       if (retryEngine != null) {
         httpEngine = retryEngine;

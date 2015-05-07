@@ -22,6 +22,7 @@ import com.squareup.okhttp.internal.RouteDatabase;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.AuthenticatorAdapter;
 import com.squareup.okhttp.internal.http.HttpEngine;
+import com.squareup.okhttp.internal.http.RouteException;
 import com.squareup.okhttp.internal.http.Transport;
 import com.squareup.okhttp.internal.tls.OkHostnameVerifier;
 import java.io.IOException;
@@ -36,7 +37,10 @@ import java.util.concurrent.TimeUnit;
 import javax.net.SocketFactory;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+import okio.BufferedSink;
+import okio.BufferedSource;
 
 /**
  * Configures and creates HTTP connections. Most applications can use a single
@@ -49,7 +53,7 @@ import javax.net.ssl.SSLSocketFactory;
  * {@link #clone()} to make a shallow copy of the OkHttpClient that can be
  * safely modified with further configuration changes.
  */
-public final class OkHttpClient implements Cloneable {
+public class OkHttpClient implements Cloneable {
   private static final List<Protocol> DEFAULT_PROTOCOLS = Util.immutableList(
       Protocol.HTTP_2, Protocol.SPDY_3, Protocol.HTTP_1_1);
 
@@ -91,6 +95,10 @@ public final class OkHttpClient implements Cloneable {
         builder.addLenient(line);
       }
 
+      @Override public void addLenient(Headers.Builder builder, String name, String value) {
+        builder.addLenient(name, value);
+      }
+
       @Override public void setCache(OkHttpClient client, InternalCache internalCache) {
         client.setInternalCache(internalCache);
       }
@@ -116,7 +124,7 @@ public final class OkHttpClient implements Cloneable {
       }
 
       @Override public void connectAndSetOwner(OkHttpClient client, Connection connection,
-          HttpEngine owner, Request request) throws IOException {
+          HttpEngine owner, Request request) throws RouteException {
         connection.connectAndSetOwner(client, owner, request);
       }
 
@@ -133,8 +141,21 @@ public final class OkHttpClient implements Cloneable {
         return call.engine.getConnection();
       }
 
+      @Override public BufferedSource connectionRawSource(Connection connection) {
+        return connection.rawSource();
+      }
+
+      @Override public BufferedSink connectionRawSink(Connection connection) {
+        return connection.rawSink();
+      }
+
       @Override public void connectionSetOwner(Connection connection, Object owner) {
         connection.setOwner(owner);
+      }
+
+      @Override
+      public void apply(ConnectionSpec tlsConfiguration, SSLSocket sslSocket, boolean isFallback) {
+        tlsConfiguration.apply(sslSocket, isFallback);
       }
     };
   }

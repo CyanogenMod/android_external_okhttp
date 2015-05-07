@@ -38,7 +38,6 @@ import java.net.UnknownServiceException;
 import java.security.cert.Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
@@ -74,6 +73,7 @@ import static com.squareup.okhttp.internal.Internal.logger;
 import static java.net.CookiePolicy.ACCEPT_ORIGINAL_SERVER;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -259,7 +259,7 @@ public final class CallTest {
 
     Request request = new Request.Builder()
         .url(server.getUrl("/"))
-        .method("POST", null)
+        .method("POST", RequestBody.create(null, new byte[0]))
         .build();
 
     executeSynchronously(request)
@@ -681,6 +681,7 @@ public final class CallTest {
     }
   }
 
+  // https://github.com/square/okhttp/issues/442
   @Test public void timeoutsNotRetried() throws Exception {
     server.enqueue(new MockResponse()
         .setSocketPolicy(SocketPolicy.NO_RESPONSE));
@@ -851,7 +852,7 @@ public final class CallTest {
       client.newCall(request).execute();
       fail();
     } catch (UnknownServiceException expected) {
-      assertTrue(expected.getMessage().contains("no connection specs"));
+      assertTrue(expected.getMessage().contains("CLEARTEXT communication not supported"));
     }
   }
 
@@ -1553,6 +1554,25 @@ public final class CallTest {
     canceledAfterResponseIsDeliveredBreaksStreamButSignalsOnce();
   }
 
+  @Test public void cancelWithInterceptor() throws Exception {
+    client.interceptors().add(new Interceptor() {
+      @Override public Response intercept(Chain chain) throws IOException {
+        chain.proceed(chain.request());
+        throw new AssertionError(); // We expect an exception.
+      }
+    });
+
+    Call call = client.newCall(new Request.Builder().url(server.getUrl("/a")).build());
+    call.cancel();
+
+    try {
+      call.execute();
+      fail();
+    } catch (IOException expected) {
+    }
+    assertEquals(0, server.getRequestCount());
+  }
+
   @Test public void gzip() throws Exception {
     Buffer gzippedBody = gzip("abcabcabc");
     String bodySize = Long.toString(gzippedBody.size());
@@ -1697,21 +1717,6 @@ public final class CallTest {
     sink.writeUtf8(data);
     sink.close();
     return result;
-  }
-
-  private void assertContains(Collection<String> collection, String element) {
-    for (String c : collection) {
-      if (c != null && c.equalsIgnoreCase(element)) return;
-    }
-    fail("No " + element + " in " + collection);
-  }
-
-  private void assertContainsNoneMatching(List<String> headers, String pattern) {
-    for (String header : headers) {
-      if (header.matches(pattern)) {
-        fail("Header " + header + " matches " + pattern);
-      }
-    }
   }
 
   private static class RecordingSSLSocketFactory extends DelegatingSSLSocketFactory {
