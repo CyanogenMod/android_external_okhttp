@@ -19,6 +19,7 @@ package com.squareup.okhttp.internal.spdy;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.List;
 import okio.AsyncTimeout;
@@ -600,8 +601,16 @@ public final class SpdyStream {
       closeLater(ErrorCode.CANCEL);
     }
 
-    public void exitAndThrowIfTimedOut() throws InterruptedIOException {
-      if (exit()) throw new InterruptedIOException("timeout");
+    @Override protected IOException newTimeoutException(IOException cause) {
+      SocketTimeoutException socketTimeoutException = new SocketTimeoutException("timeout");
+      if (cause != null) {
+        socketTimeoutException.initCause(cause);
+      }
+      return socketTimeoutException;
+    }
+
+    public void exitAndThrowIfTimedOut() throws IOException {
+      if (exit()) throw newTimeoutException(null /* cause */);
     }
   }
 }
