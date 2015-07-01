@@ -26,6 +26,7 @@ import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 public class HttpHandler extends URLStreamHandler {
 
@@ -66,6 +67,11 @@ public class HttpHandler extends URLStreamHandler {
     // Visible for android.net.Network.
     public static OkUrlFactory createHttpOkUrlFactory(Proxy proxy) {
         OkHttpClient client = new OkHttpClient();
+
+        // Explicitly set the timeouts to infinity.
+        client.setConnectTimeout(0, TimeUnit.MILLISECONDS);
+        client.setReadTimeout(0, TimeUnit.MILLISECONDS);
+        client.setWriteTimeout(0, TimeUnit.MILLISECONDS);
 
         // Do not permit http -> https and https -> http redirects.
         client.setFollowSslRedirects(false);
