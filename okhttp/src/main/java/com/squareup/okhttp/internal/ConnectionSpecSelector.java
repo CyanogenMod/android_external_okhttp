@@ -99,6 +99,12 @@ public final class ConnectionSpecSelector {
     }
 
     // If there was an interruption or timeout, don't recover.
+    //
+    // NOTE: This code (unlike the rest of this method) is not shared with HttpEngine.
+    // In HttpEngine, we would like to retry if we see an interruption or timeout because
+    // we might potentially be connecting to a different address family (IPV4 vs IPV6, say).
+    // That consideration is not relevant here, since the SocketConnector will always connect
+    // via the same Route even if the connection failed.
     if (e instanceof InterruptedIOException) {
       return false;
     }
