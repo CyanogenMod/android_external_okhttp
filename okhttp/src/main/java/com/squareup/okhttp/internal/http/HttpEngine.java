@@ -449,11 +449,6 @@ public final class HttpEngine {
       return false;
     }
 
-    // If there was an interruption or timeout, don't recover.
-    if (ioe instanceof InterruptedIOException) {
-      return false;
-    }
-
     // Look for known client-side or negotiation errors that are unlikely to be fixed by trying
     // again with a different route.
     if (ioe instanceof SSLHandshakeException) {
