@@ -821,17 +821,21 @@ public final class JavaApiConverter {
       throw throwRequestSslAccessException();
     }
 
-    @Override public long getContentLengthLong() {
-      return delegate.getContentLengthLong();
-    }
+    // ANDROID-BEGIN
+    // @Override public long getContentLengthLong() {
+    //   return delegate.getContentLengthLong();
+    // }
+    // ANDROID-END
 
     @Override public void setFixedLengthStreamingMode(long contentLength) {
       delegate.setFixedLengthStreamingMode(contentLength);
     }
 
-    @Override public long getHeaderFieldLong(String field, long defaultValue) {
-      return delegate.getHeaderFieldLong(field, defaultValue);
-    }
+    // ANDROID-BEGIN
+    // @Override public long getHeaderFieldLong(String field, long defaultValue) {
+    //   return delegate.getHeaderFieldLong(field, defaultValue);
+    // }
+    // ANDROID-END
   }
 
   private static RuntimeException throwRequestModificationException() {
