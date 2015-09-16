@@ -210,7 +210,7 @@ public final class JavaApiConverter {
     }
 
     Request cacheRequest = new Request.Builder()
-        .url(request.url())
+        .url(request.httpUrl())
         .method(request.method(), null)
         .headers(varyHeaders)
         .build();
@@ -821,21 +821,17 @@ public final class JavaApiConverter {
       throw throwRequestSslAccessException();
     }
 
-    // ANDROID-BEGIN
-    // @Override public long getContentLengthLong() {
-    //   return delegate.getContentLengthLong();
-    // }
-    // ANDROID-END
+    @Override public long getContentLengthLong() {
+      return delegate.getContentLengthLong();
+    }
 
     @Override public void setFixedLengthStreamingMode(long contentLength) {
       delegate.setFixedLengthStreamingMode(contentLength);
     }
 
-    // ANDROID-BEGIN
-    // @Override public long getHeaderFieldLong(String field, long defaultValue) {
-    //   return delegate.getHeaderFieldLong(field, defaultValue);
-    // }
-    // ANDROID-END
+    @Override public long getHeaderFieldLong(String field, long defaultValue) {
+      return delegate.getHeaderFieldLong(field, defaultValue);
+    }
   }
 
   private static RuntimeException throwRequestModificationException() {
