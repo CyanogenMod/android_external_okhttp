@@ -20,6 +20,7 @@ package com.squareup.okhttp.internal.huc;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.Handshake;
 import com.squareup.okhttp.Headers;
+import com.squareup.okhttp.HttpUrl;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.Request;
@@ -28,14 +29,15 @@ import com.squareup.okhttp.Response;
 import com.squareup.okhttp.Route;
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.Platform;
-import com.squareup.okhttp.internal.http.RouteException;
 import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.internal.Version;
 import com.squareup.okhttp.internal.http.HttpDate;
 import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.HttpMethod;
 import com.squareup.okhttp.internal.http.OkHeaders;
 import com.squareup.okhttp.internal.http.RequestException;
 import com.squareup.okhttp.internal.http.RetryableSink;
+import com.squareup.okhttp.internal.http.RouteException;
 import com.squareup.okhttp.internal.http.StatusLine;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -44,10 +46,12 @@ import java.io.OutputStream;
 import java.net.HttpRetryException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.SocketPermission;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.security.Permission;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -255,8 +259,11 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
   }
 
   @Override public final Permission getPermission() throws IOException {
-    String hostName = getURL().getHost();
-    int hostPort = Util.getEffectivePort(getURL());
+    URL url = getURL();
+    String hostName = url.getHost();
+    int hostPort = url.getPort() != -1
+        ? url.getPort()
+        : HttpUrl.defaultPort(url.getProtocol());
     if (usingProxy()) {
       InetSocketAddress proxyAddress = (InetSocketAddress) client.getProxy().address();
       hostName = proxyAddress.getHostName();
@@ -316,14 +323,16 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
     }
   }
 
-  private HttpEngine newHttpEngine(String method, Connection connection,
-      RetryableSink requestBody, Response priorResponse) {
+  private HttpEngine newHttpEngine(String method, Connection connection, RetryableSink requestBody,
+      Response priorResponse) throws MalformedURLException, UnknownHostException {
     // OkHttp's Call API requires a placeholder body; the real body will be streamed separately.
     RequestBody placeholderBody = HttpMethod.requiresRequestBody(method)
         ? EMPTY_REQUEST_BODY
         : null;
+    URL url = getURL();
+    HttpUrl httpUrl = Internal.instance.getHttpUrlChecked(url.toString());
     Request.Builder builder = new Request.Builder()
-        .url(getURL())
+        .url(httpUrl)
         .method(method, placeholderBody);
     Headers headers = requestHeaders.build();
     for (int i = 0, size = headers.size(); i < size; i++) {
@@ -365,7 +374,7 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
 
   private String defaultUserAgent() {
     String agent = System.getProperty("http.agent");
-    return agent != null ? agent : ("Java" + System.getProperty("java.version"));
+    return agent != null ? Util.toHumanReadableAscii(agent) : Version.userAgent();
   }
 
   /**
@@ -413,7 +422,7 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
         throw new HttpRetryException("Cannot retry streamed HTTP body", responseCode);
       }
 
-      if (!httpEngine.sameConnection(followUp.url())) {
+      if (!httpEngine.sameConnection(followUp.httpUrl())) {
         httpEngine.releaseConnection();
       }
 

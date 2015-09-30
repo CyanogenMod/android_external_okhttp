@@ -22,15 +22,16 @@ okhttp_common_src_files += $(call all-java-files-under,okio/okio/src/main/java)
 okhttp_system_src_files := $(filter-out %/Platform.java, $(okhttp_common_src_files))
 okhttp_system_src_files += $(call all-java-files-under, android/main/java)
 
-okhttp_test_src_files := $(call all-java-files-under,okhttp-tests/src/test/java)
-okhttp_test_src_files += $(call all-java-files-under,okhttp-urlconnection/src/test/java)
+okhttp_test_src_files := $(call all-java-files-under,android/test/java)
 okhttp_test_src_files += $(call all-java-files-under,okhttp-android-support/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-testing-support/src/main/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-tests/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-urlconnection/src/test/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-ws/src/main/java)
+okhttp_test_src_files += $(call all-java-files-under,okhttp-ws-tests/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,okio/okio/src/test/java)
 okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/main/java)
 okhttp_test_src_files += $(call all-java-files-under,mockwebserver/src/test/java)
-okhttp_test_src_files += $(call all-java-files-under,android/test/java)
-okhttp_test_src_files += $(call all-java-files-under,okhttp-ws/src/main/java)
-okhttp_test_src_files += $(call all-java-files-under,okhttp-ws-tests/src/test/java)
 
 # Exclude tests Android currently has problems with:
 # 1) Parameterized (requires JUnit 4.11).
