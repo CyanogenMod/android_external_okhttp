@@ -1,9 +1,11 @@
 package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.Platform;
+import com.squareup.okhttp.internal.io.FileSystem;
+import com.squareup.okhttp.internal.io.InMemoryFileSystem;
 import com.squareup.okhttp.mockwebserver.MockResponse;
 import com.squareup.okhttp.mockwebserver.MockWebServer;
-import com.squareup.okhttp.mockwebserver.rule.MockWebServerRule;
+import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.text.DateFormat;
@@ -15,7 +17,6 @@ import java.util.concurrent.TimeUnit;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static okio.Okio.buffer;
@@ -24,17 +25,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 public class OkUrlFactoryTest {
-  @Rule public MockWebServerRule serverRule = new MockWebServerRule();
-  @Rule public TemporaryFolder cacheFolder = new TemporaryFolder();
+  @Rule public MockWebServer server = new MockWebServer();
 
-  private MockWebServer server;
+  private FileSystem fileSystem = new InMemoryFileSystem();
   private OkUrlFactory factory;
 
   @Before public void setUp() throws IOException {
-    server = serverRule.get();
-
     OkHttpClient client = new OkHttpClient();
-    client.setCache(new Cache(cacheFolder.getRoot(), 10 * 1024 * 1024));
+    client.setCache(new Cache(new File("/cache/"), 10 * 1024 * 1024, fileSystem));
     factory = new OkUrlFactory(client);
   }
 
