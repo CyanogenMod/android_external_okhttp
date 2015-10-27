@@ -3231,7 +3231,7 @@ public final class URLConnectionTest {
     }
   }
 
-  @Test void instanceFollowsRedirects() throws Exception {
+  @Test public void instanceFollowsRedirects() throws Exception {
     testInstanceFollowsRedirects("http://www.google.com/");
     testInstanceFollowsRedirects("https://www.google.com/");
   }
