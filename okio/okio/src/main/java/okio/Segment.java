@@ -32,7 +32,7 @@ package okio;
  */
 final class Segment {
   /** The size of all segments in bytes. */
-  static final int SIZE = 8192;
+  static final int SIZE = 2048;
 
   final byte[] data;
 
