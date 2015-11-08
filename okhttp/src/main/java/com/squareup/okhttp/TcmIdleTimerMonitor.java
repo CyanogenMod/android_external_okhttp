@@ -66,7 +66,6 @@ public class TcmIdleTimerMonitor implements DpmTcmIface {
       } catch (ClassNotFoundException e) {
         //Ignore ClassNotFound Exception
       } catch (Exception e) {
-        Platform.get().logW("tcmclient load failed: " + e);
       }
     }
   }
