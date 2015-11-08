@@ -47,7 +47,8 @@ LOCAL_MODULE := okhttp
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
 LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
-LOCAL_JAVA_LIBRARIES := core-libart conscrypt tcmiface
+LOCAL_JAVA_LIBRARIES := core-libart conscrypt
+LOCAL_STATIC_JAVA_LIBRARIES := tcmiface
 LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_JAVA_LIBRARY)
@@ -57,7 +58,8 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := okhttp-nojarjar
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
-LOCAL_JAVA_LIBRARIES := core-libart conscrypt tcmiface
+LOCAL_JAVA_LIBRARIES := core-libart conscrypt
+LOCAL_STATIC_JAVA_LIBRARIES := tcmiface
 LOCAL_NO_STANDARD_LIBRARIES := true
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_STATIC_JAVA_LIBRARY)
@@ -77,7 +79,8 @@ LOCAL_MODULE := okhttp-hostdex
 LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES := $(okhttp_system_src_files)
 LOCAL_JARJAR_RULES := $(LOCAL_PATH)/jarjar-rules.txt
-LOCAL_JAVA_LIBRARIES := conscrypt-hostdex tcmiface-hostdex
+LOCAL_JAVA_LIBRARIES := conscrypt-hostdex
+LOCAL_STATIC_JAVA_LIBRARIES := tcmiface-hostdex
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk
 include $(BUILD_HOST_DALVIK_JAVA_LIBRARY)
 endif  # ($(HOST_OS),linux)
