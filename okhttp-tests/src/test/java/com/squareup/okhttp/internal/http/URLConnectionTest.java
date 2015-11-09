@@ -2220,10 +2220,11 @@ public final class URLConnectionTest {
 
   /** Confirm that an unacknowledged write times out. */
   @Test public void writeTimeouts() throws IOException {
+    MockWebServer server = new MockWebServer();
     // Sockets on some platforms can have large buffers that mean writes do not block when
     // required. These socket factories explicitly set the buffer sizes on sockets created.
     final int SOCKET_BUFFER_SIZE = 4 * 1024;
-    server.get().setServerSocketFactory(
+    server.setServerSocketFactory(
         new DelegatingServerSocketFactory(ServerSocketFactory.getDefault()) {
           @Override
           protected void configureServerSocket(ServerSocket serverSocket) throws IOException {
@@ -2238,6 +2239,7 @@ public final class URLConnectionTest {
       }
     });
 
+    server.start();
     server.enqueue(new MockResponse()
         .throttleBody(1, 1, TimeUnit.SECONDS)); // Prevent the server from reading!
 

@@ -126,6 +126,8 @@ public final class MockWebServer {
 
   public void setServerSocketFactory(ServerSocketFactory serverSocketFactory) {
     if (serverSocketFactory == null) throw new IllegalArgumentException("null serverSocketFactory");
+    if (executor != null) throw new IllegalStateException(
+        "setServerSocketFactory() must be called before start()");
     this.serverSocketFactory = serverSocketFactory;
   }
 
