@@ -19,6 +19,7 @@ package com.squareup.okhttp;
 
 import libcore.net.NetworkSecurityPolicy;
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.ResponseCache;
 import java.net.URL;
@@ -72,6 +73,10 @@ public class HttpHandler extends URLStreamHandler {
         client.setConnectTimeout(0, TimeUnit.MILLISECONDS);
         client.setReadTimeout(0, TimeUnit.MILLISECONDS);
         client.setWriteTimeout(0, TimeUnit.MILLISECONDS);
+
+        // Set the default (same protocol) redirect behavior. The default can be overridden for
+        // each instance using HttpURLConnection.setInstanceFollowRedirects().
+        client.setFollowRedirects(HttpURLConnection.getFollowRedirects());
 
         // Do not permit http -> https and https -> http redirects.
         client.setFollowSslRedirects(false);
