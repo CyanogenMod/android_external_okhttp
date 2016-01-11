@@ -178,7 +178,11 @@ public final class RequestTest {
     assertForbiddenHeader(null);
     assertForbiddenHeader("\u0000");
     assertForbiddenHeader("\r");
-    assertForbiddenHeader("\n");
+    // Workaround for http://b/26422335
+    // assertForbiddenHeader("\n");
+    assertForbiddenHeader("a\nb");
+    assertForbiddenHeader("\nb");
+    // End of Android modification.
     assertForbiddenHeader("\t");
     assertForbiddenHeader("\u001f");
     assertForbiddenHeader("\u007f");
