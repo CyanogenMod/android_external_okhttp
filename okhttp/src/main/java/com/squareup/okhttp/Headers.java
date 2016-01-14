@@ -289,6 +289,14 @@ public final class Headers {
         }
       }
       if (value == null) throw new IllegalArgumentException("value == null");
+
+      // Workaround for applications that set trailing "\n" on header values.
+      // http://b/26422335. Android used to allow anything except '\0'.
+      if (value.length() > 0 && value.charAt(value.length() - 1) == '\n') {
+        value = value.substring(0, value.length() - 1);
+      }
+      // End of workaround.
+
       for (int i = 0, length = value.length(); i < length; i++) {
         char c = value.charAt(i);
         if (c <= '\u001f' || c >= '\u007f') {
