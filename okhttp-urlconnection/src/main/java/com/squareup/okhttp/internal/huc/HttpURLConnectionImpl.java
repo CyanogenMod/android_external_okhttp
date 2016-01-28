@@ -29,6 +29,7 @@ import com.squareup.okhttp.Response;
 import com.squareup.okhttp.Route;
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.Platform;
+import com.squareup.okhttp.internal.URLFilter;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.Version;
 import com.squareup.okhttp.internal.http.HttpDate;
@@ -106,9 +107,16 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
    */
   Handshake handshake;
 
+  private URLFilter urlFilter;
+
   public HttpURLConnectionImpl(URL url, OkHttpClient client) {
     super(url);
     this.client = client;
+  }
+
+  public HttpURLConnectionImpl(URL url, OkHttpClient client, URLFilter urlFilter) {
+    this(url, client);
+    this.urlFilter = urlFilter;
   }
 
   @Override public final void connect() throws IOException {
@@ -442,6 +450,9 @@ public class HttpURLConnectionImpl extends HttpURLConnection {
    * retried. Throws an exception if the request failed permanently.
    */
   private boolean execute(boolean readResponse) throws IOException {
+    if (urlFilter != null) {
+      urlFilter.checkURLPermitted(httpEngine.getRequest().url());
+    }
     try {
       httpEngine.sendRequest();
       route = httpEngine.getRoute();
