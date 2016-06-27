@@ -58,6 +58,7 @@ import okio.Sink;
 import okio.Source;
 import okio.Timeout;
 
+import com.squareup.okhttp.internal.Platform;
 import static com.squareup.okhttp.internal.Util.closeQuietly;
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_CONTINUE;
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_PERM_REDIRECT;
@@ -1077,12 +1078,25 @@ public final class HttpEngine {
       case HTTP_MOVED_PERM:
       case HTTP_MOVED_TEMP:
       case HTTP_SEE_OTHER:
-        // Does the client allow redirects?
-        if (!client.getFollowRedirects()) return null;
 
         String location = userResponse.header("Location");
         if (location == null) return null;
         HttpUrl url = userRequest.httpUrl().resolve(location);
+
+        /*
+         * When SIM reaches zero balance all http traffic gets redirected
+         * to recharge url and all traffic need to be blocked.
+         * So redirect count is maintained.
+         * If feature is disabled or data traffic is already blocked
+         * no need to check for redirection.
+         */
+        if (ZeroBalanceHelperClass.getFeatureFlagValue() &&
+                (!ZeroBalanceHelperClass.getBackgroundDataProperty())) {
+            ZeroBalanceHelperClass.setHttpRedirectCount(url.toString());
+            Platform.get().logW("zerobalance::okhttp:Redirect count set " );
+        }
+        // Does the client allow redirects?
+        if (!client.getFollowRedirects()) return null;
 
         // Don't follow redirects to unsupported protocols.
         if (url == null) return null;
